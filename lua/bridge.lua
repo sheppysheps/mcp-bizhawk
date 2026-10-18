@@ -62,6 +62,7 @@ local CAPS = {
     -- client
     reboot_core  = client and has(client, "reboot_core"),
     screenshot   = client and has(client, "screenshot"),
+    exit         = client and has(client, "exit"),
     -- savestate
     savestate_save = savestate and has(savestate, "save"),
     savestate_load = savestate and has(savestate, "load"),
@@ -515,6 +516,19 @@ local function cmd_reset(p)
     client.reboot_core(); return true
 end
 
+-- Set by cmd_close; the main loop calls client.exit() once the RESULT for the
+-- close command has gone out, so the caller gets a reply instead of a timeout.
+local exit_requested = false
+
+--- Ask BizHawk to shut down after this command's reply has been sent.
+--- @return true once the exit is scheduled; errors if client.exit is missing.
+--- @requires BizHawk `client.exit` (2.x); the actual exit happens in the main loop.
+local function cmd_close(p)
+    if not CAPS.exit then error("client.exit not available") end
+    exit_requested = true
+    return true
+end
+
 local function cmd_screenshot(p)
     if not CAPS.screenshot then error("client.screenshot not available") end
     local path = assert(p.path, "path required (BizHawk's client.screenshot needs an explicit path)")
@@ -719,6 +733,7 @@ local HANDLERS = {
     unpause              = cmd_unpause,
     frame_advance        = cmd_frame_advance,
     reset                = cmd_reset,
+    close                = cmd_close,
     screenshot           = cmd_screenshot,
     save_state           = cmd_save_state,
     load_state           = cmd_load_state,
@@ -833,6 +848,12 @@ while true do
     end
 
     tick()
+    -- tick() has already sent the RESULT for a close command, so it's safe to go.
+    if exit_requested then
+        console.log("[mcp-bizhawk] close requested — exiting BizHawk")
+        client.exit()
+        break
+    end
     -- While paused, emu.frameadvance() doesn't return, which would stop the
     -- bridge answering until someone unpaused by hand; emu.yield() lets the
     -- script keep polling without advancing a frame.

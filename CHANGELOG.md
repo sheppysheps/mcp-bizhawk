@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bizhawk_launch` / `bizhawk_close`:** start and stop BizHawk without a
+  human. Launch runs the EmuHawk set in the `BIZHAWK_EXE` env var (never a
+  path from the tool call), always loads this package's `bridge.lua`, and only
+  accepts an existing ROM file with a known extension. Close asks the bridge to
+  call `client.exit()` after replying, and falls back to ending the process
+  only if this server launched it. All process handling lives in
+  `src/launcher.ts`.
+
 - **Breakpoints:** `bizhawk_add_breakpoint`, `bizhawk_remove_breakpoint`,
   `bizhawk_list_breakpoints` and `bizhawk_get_breakpoint_hits`, on top of
   `event.on_bus_read` / `on_bus_write` / `on_bus_exec`. A breakpoint watches an
@@ -24,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   breakpoints fire; registers include `ROMX BANK` / `WRAM BANK`.
 
 ### Fixed
+
+- The server kept treating the bridge as ready after BizHawk disconnected.
 
 - **The bridge stopped answering while BizHawk was paused.** Its main loop
   called `emu.frameadvance()`, which doesn't return while emulation is paused,

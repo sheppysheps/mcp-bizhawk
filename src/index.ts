@@ -3,6 +3,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { BizhawkServer } from "./bizhawk.js";
 import { registerTools } from "./tools.js";
+import { BizhawkLauncher } from "./launcher.js";
 
 const HOST = process.env.BIZHAWK_HOST ?? "127.0.0.1";
 const PORT = parseInt(process.env.BIZHAWK_PORT ?? "8766", 10);
@@ -31,7 +32,7 @@ async function main() {
     { capabilities: { tools: {} } },
   );
 
-  registerTools(server, bh);
+  registerTools(server, bh, new BizhawkLauncher());
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
