@@ -52,8 +52,12 @@ end
 local CAPS = {
     -- emu
     framecount   = emu and has(emu, "framecount"),
-    pause        = emu and has(emu, "pause"),
-    unpause      = emu and has(emu, "unpause"),
+    -- BizHawk 2.x pauses through client.pause/unpause; emu.pause is checked
+    -- too, for builds that have it.
+    pause        = (emu and has(emu, "pause")) or (client and has(client, "pause")),
+    unpause      = (emu and has(emu, "unpause")) or (client and has(client, "unpause")),
+    ispaused     = client and has(client, "ispaused"),
+    yield        = emu and has(emu, "yield"),
     frameadvance = emu and has(emu, "frameadvance"),
     -- client
     reboot_core  = client and has(client, "reboot_core"),
@@ -377,6 +381,29 @@ end
 --                         stop_reason='memory_changed'. The final
 --                         observation (if screenshot/memory enabled) is
 --                         always captured at the stop frame.
+local function pause()
+    if not CAPS.pause then error("neither emu.pause nor client.pause is available") end
+    if emu and has(emu, "pause") then emu.pause() else client.pause() end
+end
+local function unpause()
+    if not CAPS.unpause then error("neither emu.unpause nor client.unpause is available") end
+    if emu and has(emu, "unpause") then emu.unpause() else client.unpause() end
+end
+local function is_paused()
+    return CAPS.ispaused and client.ispaused() == true
+end
+
+-- emu.frameadvance() waits while emulation is paused, so stepping from a
+-- paused state unpauses for the steps and pauses again afterwards.
+local function while_running(fn)
+    local was_paused = is_paused()
+    if was_paused then unpause() end
+    local ok, r = pcall(fn)
+    if was_paused then pause() end
+    if not ok then error(r, 0) end
+    return r
+end
+
 local function read_memory_widthed(domain, address, width)
     return in_domain(domain, function() return read_at_width(address, width) end)
 end
@@ -427,6 +454,8 @@ local function cmd_play_input_sequence(p)
         table.insert(observations, obs)
     end
 
+    local was_paused = is_paused()
+    if was_paused then unpause() end
     for i, frame in ipairs(frames) do
         local buttons = (type(frame) == "table" and frame.buttons) or {}
         local player  = (type(frame) == "table" and frame.player) or 1
@@ -454,6 +483,7 @@ local function cmd_play_input_sequence(p)
         end
     end
 
+    if was_paused then pause() end
     return {
         played = count,
         final_framecount = CAPS.framecount and emu.framecount() or nil,
@@ -463,19 +493,15 @@ local function cmd_play_input_sequence(p)
     }
 end
 
-local function cmd_pause(p)
-    if not CAPS.pause then error("emu.pause not available") end
-    emu.pause(); return true
-end
-local function cmd_unpause(p)
-    if not CAPS.unpause then error("emu.unpause not available") end
-    emu.unpause(); return true
-end
+local function cmd_pause(p) pause(); return true end
+local function cmd_unpause(p) unpause(); return true end
 local function cmd_frame_advance(p)
     if not CAPS.frameadvance then error("emu.frameadvance not available") end
     local n = p.count or 1
-    for _ = 1, n do emu.frameadvance() end
-    return CAPS.framecount and emu.framecount() or nil
+    return while_running(function()
+        for _ = 1, n do emu.frameadvance() end
+        return CAPS.framecount and emu.framecount() or nil
+    end)
 end
 local function cmd_reset(p)
     if not CAPS.reboot_core then error("client.reboot_core not available") end
@@ -633,5 +659,8 @@ while true do
     end
 
     tick()
-    emu.frameadvance()
+    -- While paused, emu.frameadvance() doesn't return, which would stop the
+    -- bridge answering until someone unpaused by hand; emu.yield() lets the
+    -- script keep polling without advancing a frame.
+    if CAPS.yield and is_paused() then emu.yield() else emu.frameadvance() end
 end

@@ -447,7 +447,7 @@ const TOOLS: Tool[] = [
     description:
       "PURPOSE: Pause emulation — freeze game-logic clocks and hold the current frame on screen. " +
       "USAGE: Use before a sequence of memory-inspect / write / screenshot calls when you need a stable game state across calls (so the game doesn't advance between your reads). Use bizhawk_unpause to resume; use bizhawk_frame_advance to step single frames without leaving pause. " +
-      "BEHAVIOR: Modifies emulator run state. The Lua bridge keeps polling the socket while paused, so all other tool calls (memory r/w, screenshot, save_state, etc.) still work. Returns an error if the loaded core doesn't expose emu.pause — check `capabilities.pause` in bizhawk_get_info first to handle that case gracefully. Calling pause when already paused is a no-op. " +
+      "BEHAVIOR: Modifies emulator run state. The Lua bridge keeps polling the socket while paused, so all other tool calls (memory r/w, screenshot, save_state, etc.) still work. Uses emu.pause where the build has it, else client.pause (BizHawk 2.x). Returns an error if neither exists — check `capabilities.pause` in bizhawk_get_info first to handle that case gracefully. Calling pause when already paused is a no-op. " +
       "RETURNS: Single line 'Emulation paused'.",
     inputSchema: { type: "object", properties: {} },
   },
@@ -456,7 +456,7 @@ const TOOLS: Tool[] = [
     description:
       "PURPOSE: Resume emulation after a pause, returning to normal real-time playback. " +
       "USAGE: Counterpart to bizhawk_pause. Use after a paused inspection sequence is complete. To advance only a few frames without resuming full speed, use bizhawk_frame_advance instead. " +
-      "BEHAVIOR: Modifies emulator run state. Returns an error if the loaded core doesn't expose emu.unpause — check `capabilities.unpause` in bizhawk_get_info first. Calling unpause when not paused is a no-op. " +
+      "BEHAVIOR: Modifies emulator run state. Uses emu.unpause where the build has it, else client.unpause (BizHawk 2.x). Returns an error if neither exists — check `capabilities.unpause` in bizhawk_get_info first. Calling unpause when not paused is a no-op. " +
       "RETURNS: Single line 'Emulation resumed'.",
     inputSchema: { type: "object", properties: {} },
   },
@@ -464,7 +464,7 @@ const TOOLS: Tool[] = [
     name: "bizhawk_frame_advance",
     description:
       "PURPOSE: Step emulation by exactly N frames (default 1) and return the new framecount. " +
-      "USAGE: Use for frame-precise input automation (combine with bizhawk_press_buttons), animation inspection, or letting the system initialize after a hard reset (RAM is mostly zero in the first ~30 frames after bizhawk_reset). For long jumps (thousands of frames) prefer bizhawk_save_state / bizhawk_load_state of a pre-prepared state — frame_advance scales linearly. Works whether emulation is currently paused or running and does NOT change the pause state. " +
+      "USAGE: Use for frame-precise input automation (combine with bizhawk_press_buttons), animation inspection, or letting the system initialize after a hard reset (RAM is mostly zero in the first ~30 frames after bizhawk_reset). For long jumps (thousands of frames) prefer bizhawk_save_state / bizhawk_load_state of a pre-prepared state — frame_advance scales linearly. Works whether emulation is currently paused or running and does NOT change the pause state (from a pause it steps exactly N frames and stays paused). " +
       "BEHAVIOR: Advances the game-logic clock by N frames. Each step costs roughly one real frame (~16ms at 60Hz) plus one bridge round-trip — so advancing 600 frames takes ~10 seconds wall-clock. Returns an error if the loaded core doesn't expose emu.frameadvance. " +
       "RETURNS: Single line 'Advanced N frame(s). Framecount: NEW_COUNT'.",
     inputSchema: {

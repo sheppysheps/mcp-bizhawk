@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bridge stopped answering while BizHawk was paused.** Its main loop
+  called `emu.frameadvance()`, which doesn't return while emulation is paused,
+  so every tool call timed out until someone unpaused by hand (including
+  `bizhawk_unpause` itself). While paused, the loop now calls `emu.yield()`,
+  which keeps the script polling without advancing a frame.
+- **`bizhawk_pause` / `bizhawk_unpause` failed on BizHawk 2.x** with
+  "emu.pause not available": 2.x pauses through `client.pause` /
+  `client.unpause`. The bridge now uses `emu.pause` where a build has it and
+  falls back to `client.pause`, and `capabilities.pause`/`unpause` report either.
+- **`bizhawk_frame_advance` and `bizhawk_play_input_sequence` from a paused
+  state** step exactly the requested frames and leave emulation paused
+  (they unpause for the steps and pause again).
+- Verified on BizHawk 2.11.1 (Gambatte, Game Boy Color).
+
 ## [0.2.0] - 2026-07-19
 
 ### Added
