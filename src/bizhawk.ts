@@ -73,6 +73,49 @@ export class BizhawkServer {
   }
   private bridgeReady = false;
 
+  /**
+   * Wait until bridge.lua is polling (see isBridgeReady()).
+   * @returns Promise resolving true once the bridge is ready, or false if
+   *          `timeoutMs` passes first. Never rejects.
+   * @requires Nothing beyond this instance; polls every 250ms.
+   */
+  async waitForBridge(timeoutMs: number): Promise<boolean> {
+    return this.waitFor(() => this.bridgeReady, timeoutMs);
+  }
+
+  /**
+   * Wait until the BizHawk socket has closed (e.g. after bizhawk_close).
+   * @returns Promise resolving true once disconnected, or false on timeout.
+   *          Never rejects.
+   * @requires Nothing beyond this instance; polls every 250ms.
+   */
+  async waitForDisconnect(timeoutMs: number): Promise<boolean> {
+    return this.waitFor(() => !this.isConnected(), timeoutMs);
+  }
+
+  /**
+   * Poll `check` every 250ms until it's true or `timeoutMs` elapses.
+   * @returns Promise resolving to the final value of `check()`.
+   * @requires Nothing.
+   */
+  private async waitFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (!check()) {
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return true;
+  }
+
+  /**
+   * Host and port BizHawk should dial, for building launch arguments.
+   * @returns `{ host, port }` as configured at construction.
+   * @requires Nothing.
+   */
+  target(): { host: string; port: number } {
+    return { host: this.host, port: this.port };
+  }
+
   /** Start listening. Resolves once the listen socket is bound. */
   async start(): Promise<void> {
     if (this.server) return;
@@ -116,6 +159,7 @@ export class BizhawkServer {
     sock.on("close", () => {
       process.stderr.write("[mcp-bizhawk] BizHawk client disconnected\n");
       this.client = null;
+      this.bridgeReady = false;
       // Leave inflight commands hanging — they'll time out cleanly.
     });
     sock.on("error", (err) => {

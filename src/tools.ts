@@ -5,6 +5,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { BizhawkServer } from "./bizhawk.js";
+import { BizhawkLauncher } from "./launcher.js";
 
 const VALID_BUTTONS = [
   "A", "B", "X", "Y",                 // Face buttons
@@ -532,6 +533,35 @@ const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {} },
   },
 
+  // ── Emulator lifecycle ─────────────────────────────────────────────────
+
+  {
+    name: "bizhawk_launch",
+    description:
+      "PURPOSE: Start the BizHawk emulator with a ROM and the mcp-bizhawk Lua bridge already loaded, so no one has to open it by hand. " +
+      "USAGE: Call at the start of a session when bizhawk_ping fails because BizHawk isn't running. Afterwards every other tool works without further setup. Use bizhawk_close to shut it down. " +
+      "BEHAVIOR: Starts an OS process. The executable is fixed by the BIZHAWK_EXE setting in the MCP config (it can't be chosen here), and the Lua script is always this package's bridge.lua. The ROM must be an existing file with a known ROM extension (.gb, .gbc, .gba, .nes, .sfc, .z64, .cue, .zip, …). Waits up to wait_seconds for the bridge to start polling. Returns an error if BIZHAWK_EXE is unset or invalid, the ROM fails validation, a BizHawk is already connected, or one launched by this server is still running. " +
+      "RETURNS: Lines giving the PID, ROM path, and whether the bridge connected in time.",
+    inputSchema: {
+      type: "object",
+      required: ["rom"],
+      properties: {
+        rom:          { type: "string", description: "Path to the ROM file to boot. Absolute is safest; relative paths resolve against the MCP server's working directory (usually the project root)." },
+        wait_seconds: { type: "integer", minimum: 1, maximum: 120, default: 30, description: "How long to wait for bridge.lua to connect before returning (default 30). BizHawk's first start on a machine can be slow." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "bizhawk_close",
+    description:
+      "PURPOSE: Shut down the BizHawk emulator cleanly. " +
+      "USAGE: Call when a session is finished, or before bizhawk_launch to restart with a different ROM. Save anything you need first (bizhawk_save_state). " +
+      "BEHAVIOR: DESTRUCTIVE: closes the emulator; unsaved progress is lost. Asks the bridge to call client.exit() after replying, then waits for the socket to close. If the bridge isn't answering but this server launched the BizHawk process, that process is terminated instead. Returns an error if neither path is available (BizHawk not connected and not launched by this server). " +
+      "RETURNS: Single line describing how BizHawk was closed.",
+    inputSchema: { type: "object", properties: {} },
+  },
+
   // ── Emulator control ───────────────────────────────────────────────────
 
   {
@@ -661,7 +691,56 @@ function describeBreakpoint(b: BreakpointSummary): string {
     `${b.dropped ? `, ${b.dropped} dropped` : ""} (max ${b.max_hits})`;
 }
 
-export function registerTools(server: Server, bh: BizhawkServer): void {
+/**
+ * Start BizHawk and wait for the bridge to come up.
+ * @returns MCP text result with PID, ROM and connection status. Throws on
+ *          validation or spawn failure, or if BizHawk is already connected.
+ * @requires BizhawkLauncher (BIZHAWK_EXE configured); a listening BizhawkServer.
+ */
+async function launchBizhawk(bh: BizhawkServer, launcher: BizhawkLauncher, rom: string, waitSeconds: number) {
+  if (bh.isConnected()) throw new Error("BizHawk is already connected. Use bizhawk_close first to restart it.");
+  const r = await launcher.launch(rom, bh.target());
+  const ready = await bh.waitForBridge(waitSeconds * 1000);
+  return ok(
+    `Launched BizHawk (PID ${r.pid})\nROM: ${r.rom}\n` +
+    (ready
+      ? "Bridge connected — ready for tool calls."
+      : `Bridge not connected after ${waitSeconds}s. BizHawk may still be starting; retry bizhawk_ping shortly.`),
+  );
+}
+
+/**
+ * Close BizHawk: gracefully through the bridge, else by ending our own process.
+ * @returns MCP text result describing which path was taken. Throws if BizHawk
+ *          is neither connected nor launched by this server.
+ * @requires BizhawkServer bridge (client.exit) or a process started by BizhawkLauncher.
+ */
+async function closeBizhawk(bh: BizhawkServer, launcher: BizhawkLauncher) {
+  if (bh.isBridgeReady()) {
+    try {
+      await bh.call("close");
+      const gone = await bh.waitForDisconnect(10_000);
+      await launcher.waitForExit(10_000);
+      if (gone) return ok("BizHawk closed (client.exit).");
+      if (!launcher.isRunning()) {
+        return ok("Close sent, but BizHawk is still connected after 10s. It may be showing a dialog (e.g. save prompt).");
+      }
+    } catch (err) {
+      if (!launcher.isRunning()) throw err;
+    }
+  }
+  if (launcher.isRunning()) {
+    const pid = launcher.pid();
+    launcher.kill();
+    const exited = await launcher.waitForExit(10_000);
+    return ok(exited
+      ? `Bridge didn't respond; terminated the BizHawk process this server launched (PID ${pid}).`
+      : `Sent terminate to PID ${pid}, but it hasn't exited after 10s.`);
+  }
+  throw new Error("BizHawk isn't connected and wasn't launched by this server, so there's nothing to close.");
+}
+
+export function registerTools(server: Server, bh: BizhawkServer, launcher: BizhawkLauncher): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
@@ -874,6 +953,9 @@ export function registerTools(server: Server, bh: BizhawkServer): void {
         const r = await bh.call<Record<string, number>>("get_registers");
         return ok(Object.entries(r).map(([k, v]) => `${k.padEnd(8)} ${fmtHex(v)}`).join("\n"));
       }
+
+      case "bizhawk_launch": return launchBizhawk(bh, launcher, p.rom as string, (p.wait_seconds as number) ?? 30);
+      case "bizhawk_close":  return closeBizhawk(bh, launcher);
 
       case "bizhawk_pause":         await bh.call("pause");          return ok("Emulation paused");
       case "bizhawk_unpause":       await bh.call("unpause");        return ok("Emulation resumed");

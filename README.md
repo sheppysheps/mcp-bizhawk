@@ -145,11 +145,14 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 |----------------|---------------|--------------------------------------|
 | `BIZHAWK_HOST` | `127.0.0.1`   | TCP host to listen on for BizHawk    |
 | `BIZHAWK_PORT` | `8766`        | TCP port to listen on for BizHawk    |
+| `BIZHAWK_EXE`  | *(unset)*     | Absolute path to `EmuHawk.exe` (or `EmuHawkMono.sh`). Only needed for `bizhawk_launch`; tool callers can't change it |
 
 ## Tools
 
 | Tool | Description |
 |------|-------------|
+| `bizhawk_launch` | Start BizHawk (from `BIZHAWK_EXE`) with a ROM and `lua/bridge.lua` preloaded; waits for the bridge |
+| `bizhawk_close` | Close BizHawk via `client.exit()`; falls back to ending the process this server launched |
 | `bizhawk_ping` | Verify bridge connectivity (returns `pong`) |
 | `bizhawk_get_info` | ROM name, ROM hash, framecount, memory domains, capabilities |
 | `bizhawk_list_memory_domains` | List available memory domains for the loaded core |
