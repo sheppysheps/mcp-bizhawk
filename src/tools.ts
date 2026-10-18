@@ -440,6 +440,98 @@ const TOOLS: Tool[] = [
     },
   },
 
+  // ── Breakpoints & CPU state ────────────────────────────────────────────
+
+  {
+    name: "bizhawk_add_breakpoint",
+    description:
+      "PURPOSE: Watch memory reads, writes, or instruction execution at an address (or a short range) and log every hit with the CPU registers, the top of the stack, and optional extra memory reads — e.g. to find which code writes a RAM flag. " +
+      "USAGE: Add the breakpoint, then run the game (bizhawk_unpause, bizhawk_frame_advance, bizhawk_play_input_sequence) and fetch what happened with bizhawk_get_breakpoint_hits. Use kind 'write' to find the code that changes a value, 'read' to find what checks it, 'exec' to see when a routine runs. On cores with banked memory, pass `capture` to record the mapping registers (e.g. a Game Boy ROM bank byte) with each hit, since the PC alone doesn't say which bank ran. " +
+      "BEHAVIOR: These are LOGGING breakpoints: BizHawk's Lua can't halt the CPU mid-instruction. With pause_on_hit, emulation pauses at the end of the frame in which the hit happened. Each address in the range registers its own callback, so wide ranges slow emulation; exec callbacks on hot code are the most expensive. Hits are kept in a ring buffer of max_hits (oldest dropped first; hit_count keeps the true total). Which kinds fire depends on the core (some cores don't implement read or exec callbacks, or report the written value as 0 — check with a known hit). Breakpoints last until removed or until the bridge script stops. Returns an error for an unknown kind, scope or capture domain, a length outside 1..256, or when the build lacks the event callback API. " +
+      "RETURNS: The new breakpoint's id and settings.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["read", "write", "exec"], description: "What triggers a hit: a memory read, a memory write, or execution of an instruction at the address." },
+        address: { type: "integer", minimum: 0, description: "Address to watch, in the scope's address space (the system bus by default — CPU addresses like 0xCB56 on Game Boy, NOT per-domain offsets)." },
+        length: { type: "integer", minimum: 1, maximum: 256, default: 1, description: "Watch this many consecutive addresses starting at `address` (default 1). Each is a separate callback." },
+        scope: { type: "string", description: "Optional memory domain / bus scope the callback applies to (core-specific; omit for the CPU's system bus)." },
+        pause_on_hit: { type: "boolean", default: false, description: "Pause emulation at the end of the frame in which a hit occurs (default false)." },
+        max_hits: { type: "integer", minimum: 1, maximum: 10000, default: 100, description: "How many hits to buffer (newest kept). Default 100." },
+        stack_depth: { type: "integer", minimum: 0, maximum: 16, default: 4, description: "16-bit little-endian words to read from the stack pointer (register SP) at each hit, from stack_domain — on 8/16-bit CPUs these are usually return addresses, i.e. the calling code. Default 4; 0 disables. Ignored if the core has no SP register." },
+        stack_domain: { type: "string", description: "Domain to read the stack from. Default 'System Bus' when the core has one." },
+        capture: {
+          type: "array",
+          description: "Extra values to read at each hit, e.g. [{name:'rom_bank', domain:'System Bus', address:0xFF91, width:'u8'}].",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              domain: { type: "string" },
+              address: { type: "integer", minimum: 0 },
+              width: { type: "string", enum: ["u8", "u16", "u32"], default: "u8" },
+            },
+            required: ["name", "domain", "address"],
+          },
+        },
+        label: { type: "string", description: "Optional note shown in listings." },
+      },
+      required: ["kind", "address"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "bizhawk_remove_breakpoint",
+    description:
+      "PURPOSE: Remove one breakpoint by id, or all of them. " +
+      "USAGE: Call when done with a breakpoint, since each one slows emulation slightly. Fetch its hits with bizhawk_get_breakpoint_hits first — they're discarded with it. " +
+      "BEHAVIOR: Unregisters the breakpoint's callbacks. Returns an error for an unknown id. " +
+      "RETURNS: How many breakpoints were removed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "integer", description: "Breakpoint id from bizhawk_add_breakpoint. Omit to remove ALL breakpoints." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "bizhawk_list_breakpoints",
+    description:
+      "PURPOSE: List the active breakpoints with their settings and hit counts. " +
+      "USAGE: Check which breakpoints exist and whether they've been hit before fetching details with bizhawk_get_breakpoint_hits. " +
+      "BEHAVIOR: No side effects — pure read. " +
+      "RETURNS: One line per breakpoint: id, kind, address range, total hits, buffered hits, and dropped hits.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "bizhawk_get_breakpoint_hits",
+    description:
+      "PURPOSE: Fetch the logged hits of one breakpoint: frame, address, value, CPU registers, stack words, and captured memory for each. " +
+      "USAGE: Call after running the game with a breakpoint set. Pass clear=true to empty the buffer, so the next fetch only shows new hits. " +
+      "BEHAVIOR: Pure read unless clear=true. Returns an error for an unknown id. " +
+      "RETURNS: A summary line, then one block per hit (newest last), as JSON.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "integer", description: "Breakpoint id." },
+        limit: { type: "integer", minimum: 1, description: "Return only the newest N buffered hits (default all)." },
+        clear: { type: "boolean", default: false, description: "Empty the hit buffer after reading (hit_count keeps counting)." },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "bizhawk_get_registers",
+    description:
+      "PURPOSE: Read the CPU registers of the loaded core right now (e.g. A, F, B, C, D, E, H, L, PC, SP on Game Boy). " +
+      "USAGE: Use while paused or between frame advances to inspect CPU state. Register names are core-specific. For the registers at the moment a particular address is touched, use bizhawk_add_breakpoint instead — between frames the PC is usually in the game's idle loop. " +
+      "BEHAVIOR: No side effects — pure read. Returns an error if the build lacks emu.getregisters. " +
+      "RETURNS: One line per register: name and value in decimal and hex.",
+    inputSchema: { type: "object", properties: {} },
+  },
+
   // ── Emulator control ───────────────────────────────────────────────────
 
   {
@@ -546,6 +638,27 @@ function fmtHex(n: unknown): string {
 }
 function addrHex(n: number): string {
   return `0x${n.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
+interface BreakpointSummary {
+  id: number;
+  kind: string;
+  address: number;
+  length: number;
+  scope?: string;
+  pause_on_hit?: boolean;
+  hit_count: number;
+  buffered: number;
+  dropped: number;
+  max_hits: number;
+  label?: string;
+}
+
+function describeBreakpoint(b: BreakpointSummary): string {
+  const range = b.length > 1 ? `${addrHex(b.address)}-${addrHex(b.address + b.length - 1)}` : addrHex(b.address);
+  return `${b.kind} ${range}${b.scope ? ` in ${b.scope}` : ""}${b.pause_on_hit ? ", pauses on hit" : ""}` +
+    `${b.label ? ` (${b.label})` : ""} — ${b.hit_count} hit(s), ${b.buffered} buffered` +
+    `${b.dropped ? `, ${b.dropped} dropped` : ""} (max ${b.max_hits})`;
 }
 
 export function registerTools(server: Server, bh: BizhawkServer): void {
@@ -733,6 +846,33 @@ export function registerTools(server: Server, bh: BizhawkServer): void {
           }
         }
         return { content };
+      }
+
+      case "bizhawk_add_breakpoint": {
+        const r = await bh.call<BreakpointSummary>("add_breakpoint", { ...p });
+        return ok(`Added breakpoint ${r.id}: ${describeBreakpoint(r)}`);
+      }
+      case "bizhawk_remove_breakpoint": {
+        const r = await bh.call<{ removed: number }>("remove_breakpoint", p.id === undefined ? {} : { id: p.id });
+        return ok(`Removed ${r.removed} breakpoint(s)`);
+      }
+      case "bizhawk_list_breakpoints": {
+        const r = await bh.call<BreakpointSummary[] | Record<string, never>>("list_breakpoints");
+        const list = Array.isArray(r) ? r : [];
+        if (!list.length) return ok("No breakpoints");
+        return ok(list.map((b) => `${b.id}: ${describeBreakpoint(b)}`).join("\n"));
+      }
+      case "bizhawk_get_breakpoint_hits": {
+        const r = await bh.call<BreakpointSummary & { hits?: unknown[] }>("get_breakpoint_hits", {
+          id: p.id, ...(p.limit !== undefined ? { limit: p.limit } : {}), ...(p.clear ? { clear: true } : {}),
+        });
+        const hits = Array.isArray(r.hits) ? r.hits : [];
+        const head = `Breakpoint ${r.id}: ${describeBreakpoint(r)}; showing ${hits.length}` + (p.clear ? " (buffer cleared)" : "");
+        return ok(hits.length ? `${head}\n${JSON.stringify(hits, null, 1)}` : head);
+      }
+      case "bizhawk_get_registers": {
+        const r = await bh.call<Record<string, number>>("get_registers");
+        return ok(Object.entries(r).map(([k, v]) => `${k.padEnd(8)} ${fmtHex(v)}`).join("\n"));
       }
 
       case "bizhawk_pause":         await bh.call("pause");          return ok("Emulation paused");

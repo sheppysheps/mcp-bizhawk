@@ -88,6 +88,13 @@ local CAPS = {
     -- gameinfo
     gameinfo_getromname = gameinfo and has(gameinfo, "getromname"),
     gameinfo_getromhash = gameinfo and has(gameinfo, "getromhash"),
+    -- breakpoints (memory callbacks) and CPU registers. Which callback kinds
+    -- actually fire depends on the core: some don't implement read or exec hooks.
+    on_bus_read      = event and has(event, "on_bus_read"),
+    on_bus_write     = event and has(event, "on_bus_write"),
+    on_bus_exec      = event and has(event, "on_bus_exec"),
+    unregisterbyid   = event and has(event, "unregisterbyid"),
+    getregisters     = emu and has(emu, "getregisters"),
 }
 
 -- ── Command handlers ────────────────────────────────────────────────────────
@@ -528,6 +535,168 @@ local function cmd_load_state(p)
     return { path = path }
 end
 
+-- ── Breakpoints ─────────────────────────────────────────────────────────────
+--
+-- BizHawk's Lua can't halt the CPU mid-instruction, so these are LOGGING
+-- breakpoints: a memory callback (event.on_bus_read/write/exec) records every
+-- hit with the CPU registers, the top of the stack and any extra memory reads
+-- the caller asked for, and can pause emulation (which takes effect at the end
+-- of the current frame). Hits are kept in a ring buffer per breakpoint; fetch
+-- them with get_breakpoint_hits. Callbacks run mid-frame, so they read memory
+-- with an explicit domain argument rather than switching the current domain.
+local BREAKPOINTS = {}       -- id -> breakpoint
+local next_breakpoint_id = 1
+local BREAKPOINT_MAX_HITS = 10000
+local BREAKPOINT_MAX_LENGTH = 256
+local BREAKPOINT_KINDS = { read = "on_bus_read", write = "on_bus_write", exec = "on_bus_exec" }
+
+local function read_in(domain, address, width)
+    if     width == "u8"  then return memory.read_u8(address, domain)
+    elseif width == "u16" then return memory.read_u16_le(address, domain)
+    elseif width == "u32" then return memory.read_u32_le(address, domain)
+    else error("width must be 'u8', 'u16', or 'u32' (got " .. tostring(width) .. ")") end
+end
+
+local function list_domains_set()
+    local set = {}
+    for _, d in ipairs(memory_domain_list() or {}) do set[d] = true end
+    return set
+end
+
+local function record_hit(bp, addr, val, flags)
+    bp.hit_count = bp.hit_count + 1
+    local hit = { n = bp.hit_count, address = addr, value = val, flags = flags,
+                  frame = CAPS.framecount and emu.framecount() or nil }
+    if CAPS.getregisters then
+        local ok, regs = pcall(emu.getregisters)
+        if ok then hit.registers = regs end
+    end
+    if bp.stack_depth > 0 and hit.registers and hit.registers.SP and bp.stack_domain then
+        local stack = {}
+        for i = 0, bp.stack_depth - 1 do
+            local ok, w = pcall(memory.read_u16_le, hit.registers.SP + 2 * i, bp.stack_domain)
+            if not ok then break end
+            stack[#stack + 1] = w
+        end
+        hit.stack = stack
+    end
+    if bp.capture then
+        local mem = {}
+        for _, spec in ipairs(bp.capture) do
+            local ok, v = pcall(read_in, spec.domain, spec.address, spec.width or "u8")
+            mem[spec.name] = ok and v or nil
+        end
+        hit.memory = mem
+    end
+    local hits = bp.hits
+    hits[#hits + 1] = hit
+    if #hits > bp.max_hits then table.remove(hits, 1); bp.dropped = bp.dropped + 1 end
+    if bp.pause_on_hit and CAPS.pause then pause() end
+end
+
+local function breakpoint_summary(bp)
+    return { id = bp.id, kind = bp.kind, address = bp.address, length = bp.length, scope = bp.scope,
+             pause_on_hit = bp.pause_on_hit, hit_count = bp.hit_count, buffered = #bp.hits,
+             dropped = bp.dropped, max_hits = bp.max_hits, label = bp.label }
+end
+
+local function cmd_add_breakpoint(p)
+    local kind = assert(p.kind, "kind required: 'read', 'write', or 'exec'")
+    local register = BREAKPOINT_KINDS[kind]
+    if not register then error("kind must be 'read', 'write', or 'exec' (got " .. tostring(kind) .. ")") end
+    if not CAPS[register] then error("event." .. register .. " not available on this BizHawk build") end
+    if not CAPS.unregisterbyid then error("event.unregisterbyid not available, so breakpoints couldn't be removed") end
+    local address = assert(p.address, "address required")
+    local length = p.length or 1
+    if length < 1 or length > BREAKPOINT_MAX_LENGTH then
+        error(string.format("length must be 1..%d (got %s)", BREAKPOINT_MAX_LENGTH, tostring(length)))
+    end
+    local max_hits = p.max_hits or 100
+    if max_hits < 1 or max_hits > BREAKPOINT_MAX_HITS then
+        error(string.format("max_hits must be 1..%d (got %s)", BREAKPOINT_MAX_HITS, tostring(max_hits)))
+    end
+    local domains = list_domains_set()
+    if p.scope and not domains[p.scope] then error("unknown scope (memory domain): " .. tostring(p.scope)) end
+    local stack_domain = p.stack_domain or (domains["System Bus"] and "System Bus" or nil)
+    if p.capture ~= nil then
+        if type(p.capture) ~= "table" then error("capture must be an array of {name, domain, address, width}") end
+        for _, spec in ipairs(p.capture) do
+            if type(spec) ~= "table" or not spec.name or not spec.domain or not spec.address then
+                error("each capture entry needs name, domain and address")
+            end
+            if not domains[spec.domain] then error("unknown capture domain: " .. tostring(spec.domain)) end
+        end
+    end
+    local bp = {
+        id = next_breakpoint_id, kind = kind, address = address, length = length, scope = p.scope,
+        pause_on_hit = p.pause_on_hit == true, max_hits = max_hits, label = p.label,
+        stack_depth = math.max(0, math.min(p.stack_depth or 4, 16)), stack_domain = stack_domain,
+        capture = p.capture, hits = {}, hit_count = 0, dropped = 0, guids = {},
+    }
+    local function on_hit(addr, val, flags)
+        pcall(record_hit, bp, addr, val, flags)
+    end
+    for a = address, address + length - 1 do
+        local name = string.format("mcp-bizhawk bp %d %s %X", bp.id, kind, a)
+        local ok, guid = pcall(event[register], on_hit, a, name, p.scope)
+        if not ok then
+            for _, g in ipairs(bp.guids) do pcall(event.unregisterbyid, g) end
+            error("couldn't register the " .. kind .. " callback at " .. string.format("0x%X", a) .. ": " .. tostring(guid))
+        end
+        bp.guids[#bp.guids + 1] = guid
+    end
+    next_breakpoint_id = next_breakpoint_id + 1
+    BREAKPOINTS[bp.id] = bp
+    return breakpoint_summary(bp)
+end
+
+local function remove_breakpoint(bp)
+    for _, g in ipairs(bp.guids) do pcall(event.unregisterbyid, g) end
+    BREAKPOINTS[bp.id] = nil
+end
+
+local function cmd_remove_breakpoint(p)
+    if p.id == nil then
+        local removed = 0
+        for _, bp in pairs(BREAKPOINTS) do remove_breakpoint(bp); removed = removed + 1 end
+        return { removed = removed }
+    end
+    local bp = BREAKPOINTS[p.id]
+    if not bp then error("no breakpoint with id " .. tostring(p.id)) end
+    remove_breakpoint(bp)
+    return { removed = 1 }
+end
+
+local function sorted_breakpoints()
+    local list = {}
+    for _, bp in pairs(BREAKPOINTS) do list[#list + 1] = bp end
+    table.sort(list, function(x, y) return x.id < y.id end)
+    return list
+end
+
+local function cmd_list_breakpoints(p)
+    local out = {}
+    for _, bp in ipairs(sorted_breakpoints()) do out[#out + 1] = breakpoint_summary(bp) end
+    return out
+end
+
+local function cmd_get_breakpoint_hits(p)
+    local bp = BREAKPOINTS[assert(p.id, "id required")]
+    if not bp then error("no breakpoint with id " .. tostring(p.id)) end
+    local limit = p.limit or #bp.hits
+    local hits = {}
+    for i = math.max(1, #bp.hits - limit + 1), #bp.hits do hits[#hits + 1] = bp.hits[i] end
+    local summary = breakpoint_summary(bp)
+    summary.hits = hits
+    if p.clear then bp.hits = {}; bp.dropped = 0 end
+    return summary
+end
+
+local function cmd_get_registers(p)
+    if not CAPS.getregisters then error("emu.getregisters not available on this BizHawk build") end
+    return emu.getregisters()
+end
+
 -- ── Dispatch table ──────────────────────────────────────────────────────────
 
 local HANDLERS = {
@@ -553,6 +722,11 @@ local HANDLERS = {
     screenshot           = cmd_screenshot,
     save_state           = cmd_save_state,
     load_state           = cmd_load_state,
+    add_breakpoint       = cmd_add_breakpoint,
+    remove_breakpoint    = cmd_remove_breakpoint,
+    list_breakpoints     = cmd_list_breakpoints,
+    get_breakpoint_hits  = cmd_get_breakpoint_hits,
+    get_registers        = cmd_get_registers,
 }
 
 local function dispatch(cmd)
