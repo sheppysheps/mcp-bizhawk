@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Breakpoints:** `bizhawk_add_breakpoint`, `bizhawk_remove_breakpoint`,
+  `bizhawk_list_breakpoints` and `bizhawk_get_breakpoint_hits`, on top of
+  `event.on_bus_read` / `on_bus_write` / `on_bus_exec`. A breakpoint watches an
+  address or a range of up to 256; each hit records the frame, address, value,
+  CPU registers, the top `stack_depth` 16-bit words at SP (usually return
+  addresses, i.e. the calling code), and any `capture` memory reads (e.g. a
+  bank register, since the PC alone doesn't say which bank ran). Hits go to a
+  per-breakpoint ring buffer (`max_hits`, default 100; `hit_count` keeps the
+  true total). `pause_on_hit` pauses at the end of the hit's frame. These are
+  logging breakpoints: BizHawk's Lua can't halt mid-instruction.
+- **`bizhawk_get_registers`:** the CPU registers via `emu.getregisters`.
+- Verified on BizHawk 2.11.1 (Gambatte, Game Boy Color): read, write and exec
+  breakpoints fire; registers include `ROMX BANK` / `WRAM BANK`.
+
 ### Fixed
 
 - **The bridge stopped answering while BizHawk was paused.** Its main loop

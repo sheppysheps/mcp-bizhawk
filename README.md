@@ -163,6 +163,12 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 | `bizhawk_reset` | Reset the loaded core |
 | `bizhawk_screenshot` | Save a PNG of the current display to a path |
 | `bizhawk_save_state` / `bizhawk_load_state` | Save / load emulator state to a file path |
+| `bizhawk_add_breakpoint` | Log every read, write or execution at an address (or a range up to 256): registers, stack words, extra memory reads; optionally pause |
+| `bizhawk_list_breakpoints` / `bizhawk_remove_breakpoint` | List breakpoints with hit counts / remove one or all |
+| `bizhawk_get_breakpoint_hits` | Fetch a breakpoint's logged hits (optionally clearing the buffer) |
+| `bizhawk_get_registers` | Read the CPU registers (names are core-specific) |
+
+Breakpoints are *logging* breakpoints: BizHawk's Lua can't halt the CPU mid-instruction, so each hit is recorded (and `pause_on_hit` pauses at the end of that frame). Breakpoint addresses are on the CPU's system bus by default (pass `scope` for another), unlike the memory tools' per-domain offsets. Whether read and exec hooks fire, and whether the written value is reported, depends on the core: on Gambatte (GB/GBC) all three kinds fire, the value of a write is always reported as 0, and the registers include the mapped `ROMX BANK`/`WRAM BANK`.
 
 All memory r/w tools take an optional `domain` parameter — if omitted, the active "current" memory domain is used. Use `bizhawk_list_memory_domains` to discover the names available on the loaded core.
 
