@@ -533,6 +533,27 @@ const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {} },
   },
 
+  // ── Arbitrary Lua (opt-in) ─────────────────────────────────────────────
+
+  {
+    name: "bizhawk_eval_lua",
+    description:
+      "PURPOSE: Run a short Lua script inside BizHawk's sandbox to read data the fixed tools can't reach in one call — walking pointer chains, decoding packed structs, scanning tables, or drawing labels with gui.*. " +
+      "USAGE: Prefer the dedicated tools (read*, read_range, search_memory) when they suffice. Use this for multi-step logic that would otherwise take many round-trips. Write memory with the bizhawk_write* tools; the sandbox is read-only. " +
+      "BEHAVIOR: DISABLED BY DEFAULT. While disabled, the call fails and opens a confirmation dialog in BizHawk; only the human at the computer can enable it by ticking its checkbox (do not ask or pressure them to). The script runs as text only, in an environment that contains ONLY: memory/mainmemory read functions, emu info (framecount, getregisters, disassemble, …), gui drawing primitives, client screen sizes, gameinfo, bit, math, string (no dump; rep capped), table, utf8, and basic functions (pairs, ipairs, tostring, pcall, print, …). There is no os, io, require, load, debug, coroutine, comm, forms or .NET access. Runs synchronously within one frame and is stopped after max_instructions VM instructions or max_memory_kb of new allocations. " +
+      "RETURNS: The script's return values (tables converted to JSON up to 4 levels), anything it print()ed, and the instruction count used; or the compile/runtime/budget error.",
+    inputSchema: {
+      type: "object",
+      required: ["code"],
+      properties: {
+        code:             { type: "string", maxLength: 65536, description: "Lua 5.4 source. Use `return` to send values back, e.g. `local p = memory.read_u16_le(0x1234, \"WRAM\") return memory.read_u8(p, \"WRAM\")`. Addresses are per-domain offsets, as with the read tools." },
+        max_instructions: { type: "integer", minimum: 1, maximum: 50000000, default: 1000000, description: "VM instruction budget (default 1,000,000; max 50,000,000). Counted in steps of 1000." },
+        max_memory_kb:    { type: "integer", minimum: 1, maximum: 65536, default: 16384, description: "Ceiling on new Lua heap use during the run, in KB (default 16384; max 65536)." },
+      },
+      additionalProperties: false,
+    },
+  },
+
   // ── Emulator lifecycle ─────────────────────────────────────────────────
 
   {
@@ -689,6 +710,32 @@ function describeBreakpoint(b: BreakpointSummary): string {
   return `${b.kind} ${range}${b.scope ? ` in ${b.scope}` : ""}${b.pause_on_hit ? ", pauses on hit" : ""}` +
     `${b.label ? ` (${b.label})` : ""} — ${b.hit_count} hit(s), ${b.buffered} buffered` +
     `${b.dropped ? `, ${b.dropped} dropped` : ""} (max ${b.max_hits})`;
+}
+
+interface EvalResult {
+  values: unknown[] | Record<string, unknown>;
+  count: number;
+  output: string;
+  instructions: number;
+}
+
+/**
+ * Format a sandbox run for the caller.
+ * @returns Text with each return value as JSON, then any printed output and
+ *          the instruction count. json.lua encodes a values list with nil holes
+ *          as an object keyed by position, so both shapes are handled.
+ * @requires Nothing.
+ */
+function describeEval(r: EvalResult): string {
+  const lines: string[] = [];
+  for (let i = 1; i <= r.count; i++) {
+    const v = Array.isArray(r.values) ? r.values[i - 1] : r.values?.[String(i)];
+    lines.push(`return[${i}]: ${JSON.stringify(v ?? null, null, 2)}`);
+  }
+  if (r.count === 0) lines.push("(no return values)");
+  if (r.output) lines.push(`--- output ---\n${r.output}`);
+  lines.push(`(${r.instructions} instructions)`);
+  return lines.join("\n");
 }
 
 /**
@@ -952,6 +999,15 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
       case "bizhawk_get_registers": {
         const r = await bh.call<Record<string, number>>("get_registers");
         return ok(Object.entries(r).map(([k, v]) => `${k.padEnd(8)} ${fmtHex(v)}`).join("\n"));
+      }
+
+      case "bizhawk_eval_lua": {
+        const r = await bh.call<EvalResult>("eval_lua", {
+          code: p.code,
+          ...(p.max_instructions !== undefined ? { max_instructions: p.max_instructions } : {}),
+          ...(p.max_memory_kb    !== undefined ? { max_memory_kb:    p.max_memory_kb }    : {}),
+        });
+        return ok(describeEval(r));
       }
 
       case "bizhawk_launch": return launchBizhawk(bh, launcher, p.rom as string, (p.wait_seconds as number) ?? 30);
