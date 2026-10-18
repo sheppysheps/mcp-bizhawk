@@ -8,3 +8,21 @@ dist/
 
 # Local agent context - not part of the repo or the published package.
 CLAUDE.md
+
+# Local BizHawk install used for testing - never commit emulator binaries.
+bizhawk-claude/
+
+# ROMs - copyrighted, never commit.
+shantae.gbc
+*.gb
+*.gbc
+*.gba
+*.nes
+*.sfc
+*.smc
+*.z64
+*.n64
+*.gen
+
+# Machine-specific MCP config (absolute paths).
+.mcp.json
