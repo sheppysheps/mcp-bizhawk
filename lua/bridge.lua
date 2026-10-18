@@ -716,7 +716,30 @@ end
 -- closed opens the confirmation dialog in BizHawk and fails; only a person
 -- ticking the checkbox opens the gate. See lua/sandbox.lua for every limit.
 
-local eval_gate = sandbox.new_gate(forms, has)
+--- Play the OS "Asterisk" sound so the human notices the confirmation dialog.
+---
+--- WHY THIS NEEDS .NET ACCESS: BizHawk's Lua API has no sound function, so this
+--- reaches System.Media.SystemSounds through NLua's `luanet`. It runs on the
+--- bridge (host) side only, imports exactly one type, plays one fixed sound, and
+--- takes no input. `luanet` itself is never handed to the sandbox.
+--- @return nothing. Silently does nothing if luanet or the type is missing
+---         (e.g. on Linux/Mono, where the call may also be silent).
+--- @requires NLua `luanet` (load_assembly, import_type); Windows for audible output.
+local function play_attention_sound()
+    if type(luanet) ~= "table" then return end
+    pcall(function()
+        luanet.load_assembly("System")
+        local SystemSounds = luanet.import_type("System.Media.SystemSounds")
+        if SystemSounds then SystemSounds.Asterisk:Play() end
+    end)
+end
+
+local eval_gate = sandbox.new_gate({
+    forms  = forms,
+    has    = has,
+    now    = os.time,
+    notify = play_attention_sound,
+})
 
 -- Libraries handed to the sandbox. sandbox.lua copies only whitelisted names.
 local SANDBOX_HOST = {
@@ -746,9 +769,13 @@ end
 --- @requires lua/sandbox.lua; BizHawk `forms` for the confirmation dialog.
 local function cmd_eval_lua(p)
     if not eval_gate.enabled() then
-        if eval_gate.request() then
-            error("arbitrary Lua is disabled. A confirmation dialog is now open in BizHawk; " ..
-                  "only the person at the computer can enable it by ticking the checkbox. Retry afterwards.")
+        local state, wait = eval_gate.request()
+        if state == "opened" or state == "open" then
+            error("arbitrary Lua is disabled. A confirmation dialog is open in BizHawk; only the person " ..
+                  "at the computer can enable it (tick the checkbox, then click Accept). Retry afterwards.")
+        elseif state == "cooldown" then
+            error(string.format("arbitrary Lua is disabled: the confirmation dialog was closed or " ..
+                  "declined, and it won't reopen for another %d s. Don't ask the user to enable it.", wait))
         end
         error("arbitrary Lua is unavailable: this BizHawk build has no forms API for the confirmation dialog")
     end

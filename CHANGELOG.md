@@ -11,8 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`bizhawk_eval_lua` (opt-in):** run short Lua scripts inside BizHawk for
   logic the fixed tools can't do in one call. Disabled by default: the first
-  call opens a confirmation dialog in BizHawk, and only a person ticking its
-  checkbox enables it (the state is never saved and resets with the bridge).
+  call opens a confirmation dialog in BizHawk (with the system Asterisk sound
+  on Windows). Its Accept button stays grayed out until the checkbox is
+  ticked, and only clicking Accept enables the feature; Cancel or closing the
+  window declines, after which the dialog won't reopen for 2 minutes. Once
+  enabled, Disable or closing the dialog turns it off. The state is never
+  saved and resets with the bridge.
   Scripts load as text only (no bytecode) into a whitelisted environment of
   memory reads, emu info, `gui` drawing, screen sizes, `gameinfo`, `bit` and
   pure math/string/table helpers. There is no `os`, `io`, `require`, `load`,

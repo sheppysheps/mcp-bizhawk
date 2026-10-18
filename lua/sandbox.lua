@@ -6,10 +6,11 @@
 -- short script inside BizHawk solves that, but "run any code" is exactly what
 -- malware wants. This module keeps the feature as small as possible:
 --
---   • OFF BY DEFAULT. Code runs only while the human has ticked the checkbox in
---     the confirmation dialog this module opens inside BizHawk. The state lives
---     in a local, is never written to disk, and resets when the bridge restarts.
---     Nothing on the MCP/Node side can tick the box: the sandbox has no `forms`.
+--   • OFF BY DEFAULT. Code runs only after the human ticks the checkbox AND
+--     clicks Accept in the confirmation dialog this module opens inside
+--     BizHawk (rules at M.new_gate). The state lives in a local, is never
+--     written to disk, and resets when the bridge restarts. Nothing on the
+--     MCP/Node side can click Accept: the sandbox has no `forms`.
 --   • TEXT ONLY. load(..., "t", env) refuses precompiled bytecode, a known way
 --     to break out of Lua sandboxes.
 --   • WHITELISTED ENVIRONMENT. The code sees a fresh table holding only the
@@ -142,41 +143,106 @@ local function to_plain(v, depth)
     return out
 end
 
---- Create the opt-in gate: the confirmation dialog plus the enabled check.
---- @return table with `enabled()` → boolean and `request()` → opens the dialog
----         if it isn't already showing. `enabled()` is false whenever the box
----         is unticked, the dialog was closed, or `forms` is unavailable.
---- @requires BizHawk `forms` (newform, label, checkbox, ischecked); `has` helper.
-function M.new_gate(forms, has)
-    local form_handle, box_handle = nil, nil
-    local can_prompt = forms and has(forms, "newform") and has(forms, "checkbox")
-                       and has(forms, "label") and has(forms, "ischecked")
+--- Create the opt-in gate: the confirmation dialog and the consent state.
+---
+--- Consent rules (maintainer decision, 2026-10-18):
+---   • Only clicking ACCEPT gives consent. Accept stays grayed out until the
+---     checkbox is ticked; ticking the box alone does nothing.
+---   • CANCEL, the title-bar X, or any other way the window closes means no.
+---   • After Accept, the window stays open as the off switch: its button
+---     becomes "Disable", and closing the window also turns the feature off.
+---   • After the window closes for any reason, it won't reopen for
+---     REPROMPT_COOLDOWN seconds, so a caller can't nag the human with a
+---     stream of dialogs until they give in.
+---
+--- @return table with:
+---   `enabled()` → true only between Accept and the window closing;
+---   `request()` → "opened" (dialog just shown), "open" (already showing),
+---                 "cooldown" (closed recently; seconds left as 2nd value), or
+---                 "unavailable" (this build has no usable `forms` API).
+--- @requires deps.forms (newform, label, checkbox, button, addclick, ischecked,
+---           setproperty, destroy); deps.has; deps.now() → seconds;
+---           deps.notify() → plays an attention sound (may be a no-op).
+function M.new_gate(deps)
+    local forms, has = deps.forms, deps.has
+    local can_prompt = forms ~= nil
+    for _, fn in ipairs({ "newform", "label", "checkbox", "button", "addclick",
+                          "ischecked", "setproperty", "destroy" }) do
+        can_prompt = can_prompt and has(forms, fn)
+    end
+
+    local consent = false
+    local form_handle, box_handle, accept_handle, cancel_handle, status_handle
+    local reopen_at = 0
+
+    --- Forget the dialog and withdraw consent; starts the reprompt cooldown.
+    --- @return nothing. Safe to call more than once (onClose fires on destroy).
+    --- @requires forms.destroy when `destroy_form` is true.
+    local function close(destroy_form)
+        local handle = form_handle
+        consent = false
+        form_handle, box_handle, accept_handle, cancel_handle, status_handle = nil, nil, nil, nil, nil
+        if handle then
+            reopen_at = deps.now() + M.REPROMPT_COOLDOWN
+            if destroy_form then pcall(forms.destroy, handle) end
+        end
+    end
+
+    --- Gray out Accept unless the checkbox is ticked (runs on each box click).
+    --- @return nothing.
+    --- @requires forms.ischecked, forms.setproperty.
+    local function sync_accept()
+        if not box_handle or consent then return end
+        local ok, checked = pcall(forms.ischecked, box_handle)
+        forms.setproperty(accept_handle, "Enabled", ok and checked == true)
+    end
+
+    --- Accept click: grant consent only if the box is still ticked, then lock
+    --- the dialog into its "enabled" state with a Disable button.
+    --- @return nothing.
+    --- @requires forms.ischecked, forms.setproperty.
+    local function on_accept()
+        if not box_handle then return end
+        local ok, checked = pcall(forms.ischecked, box_handle)
+        if not (ok and checked == true) then return end
+        consent = true
+        forms.setproperty(box_handle, "Enabled", false)
+        forms.setproperty(accept_handle, "Enabled", false)
+        forms.setproperty(cancel_handle, "Text", "Disable")
+        forms.setproperty(status_handle, "Text",
+            "Status: ENABLED. Click Disable or close this window to turn it off.")
+    end
 
     local gate = {}
 
-    function gate.enabled()
-        if not box_handle then return false end
-        local ok, checked = pcall(forms.ischecked, box_handle)
-        return ok and checked == true
-    end
+    function gate.enabled() return consent end
 
     function gate.request()
-        if not can_prompt then return false end
-        if form_handle then return true end
-        -- onClose drops the handles, which turns the feature back off.
-        form_handle = forms.newform(420, 190, "mcp-bizhawk: arbitrary Lua", function()
-            form_handle, box_handle = nil, nil
-        end)
-        forms.label(form_handle, WARNING_TEXT, 12, 12, 390, 100, true)
-        box_handle = forms.checkbox(form_handle, CHECKBOX_TEXT, 12, 120)
-        -- The caption is wider than the default checkbox; cosmetic, so ignore failure.
-        if has(forms, "setproperty") then pcall(forms.setproperty, box_handle, "Width", 390) end
-        return true
+        if not can_prompt then return "unavailable" end
+        if form_handle then return "open" end
+        local wait = reopen_at - deps.now()
+        if wait > 0 then return "cooldown", wait end
+
+        -- onClose: the title-bar X (or any other close) is never consent.
+        form_handle = forms.newform(440, 250, "mcp-bizhawk: arbitrary Lua", function() close(false) end)
+        forms.label(form_handle, WARNING_TEXT, 12, 12, 410, 92, true)
+        box_handle = forms.checkbox(form_handle, CHECKBOX_TEXT, 12, 110)
+        pcall(forms.setproperty, box_handle, "Width", 410)  -- cosmetic; caption is wide
+        status_handle = forms.label(form_handle, "Status: disabled.", 12, 142, 410, 20, true)
+        accept_handle = forms.button(form_handle, "Accept", on_accept, 222, 172, 96, 28)
+        cancel_handle = forms.button(form_handle, "Cancel", function() close(true) end, 326, 172, 96, 28)
+        forms.setproperty(accept_handle, "Enabled", false)
+        forms.addclick(box_handle, sync_accept)
+        pcall(deps.notify)
+        return "opened"
     end
 
     gate.can_prompt = can_prompt
     return gate
 end
+
+-- Seconds before a closed dialog may be shown again.
+M.REPROMPT_COOLDOWN = 120
 
 --- Run caller-supplied Lua source in the sandbox.
 --- @return table `{ values = {...}, output = "printed text", instructions = n }`
