@@ -158,6 +158,7 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 | `BIZHAWK_PORT` | `8766`        | TCP port to listen on for BizHawk    |
 | `BIZHAWK_EXE`  | *(unset)*     | Absolute path to `EmuHawk.exe` (or `EmuHawkMono.sh`). Only needed for `bizhawk_launch`; tool callers can't change it |
 | `BIZHAWK_EVAL_LUA` | *(unset)* | Set to `1` to offer `bizhawk_eval_lua`. Unset, agents don't see the tool and the confirmation dialog can never appear |
+| `BIZHAWK_DUMP_DIR` | *(unset)* | Absolute folder `bizhawk_dump_memory` may write into. Tool callers only choose names inside it (`.bin` / `.raw` / `.dat`) |
 | `BIZHAWK_HUB` | *(on)* | Set to `0` for direct mode: this process owns BizHawk's port itself, so only one MCP session at a time can use BizHawk |
 | `BIZHAWK_HUB_PORT` | `BIZHAWK_PORT − 1` (`8765`) | Local port the shared hub listens on for MCP sessions |
 | `MCP_BIZHAWK_HUB_IDLE_MS` | `300000` | The hub exits after this long with no sessions attached and no BizHawk connected |
@@ -196,6 +197,7 @@ session B (MCP stdio) ──┘   (port 8765)
 | `bizhawk_snapshot_memory` | Save a named copy of a memory region inside BizHawk (up to 16 MiB each, 64 MiB total) |
 | `bizhawk_compare_snapshots` | Find **unknown** values: changed, unchanged, increased, decreased, changed by N, equal to N; save and narrow candidate sets like BizHawk's RAM Search |
 | `bizhawk_list_snapshots` / `bizhawk_delete_snapshots` | See or free stored snapshots and candidate sets |
+| `bizhawk_dump_memory` | Write a memory region or snapshot to a file in `BIZHAWK_DUMP_DIR` (with a JSON sidecar and SHA-256), for external decoders and scripts |
 | `bizhawk_search_bytes` | Find byte patterns (`CD 40 05`, `??` wildcards), exact text, or text in an **unknown encoding** (relative search, which reports the inferred character mapping); in live memory or a snapshot |
 | `bizhawk_press_buttons` | Set joypad state for one player; keys are button names, values booleans |
 | `bizhawk_frame_advance` | Step the emulator by N frames |
