@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Unknown-value memory search:** `bizhawk_snapshot_memory`,
+  `bizhawk_compare_snapshots`, `bizhawk_list_snapshots` and
+  `bizhawk_delete_snapshots`. Snapshots are kept inside the bridge as compact
+  strings (up to 16 MiB each, 64 MiB total) and survive `load_state`;
+  comparisons (changed, unchanged, increased, decreased, changed_by,
+  equal_to; u8/u16/u32/s8/s16/s32, either endianness) run there too and can
+  save and narrow candidate sets, like BizHawk's RAM Search. Only counts and
+  short lists go back to the agent. Logic lives in `lua/snapshot.lua` and is
+  tested on stock Lua 5.4. See RECIPES 10 for controlled tests.
+
 - **Automated tests.** `npm test` runs Node unit tests for the launcher's
   input checks, tool definitions and dispatch (including the eval off switch)
   and the TCP protocol against a fake bridge. `npm run test:lua` runs the
@@ -59,6 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   breakpoints fire; registers include `ROMX BANK` / `WRAM BANK`.
 
 ### Fixed
+
+- **Input never reached single-controller cores (Game Boy / GBC).**
+  `joypad.set(buttons, player)` prefixes names with `P<n> `, but those cores
+  name buttons without one, so `press_buttons`, `press_buttons_multi` and
+  `play_input_sequence` silently pressed nothing. The bridge now detects the
+  naming and refuses `player` > 1 on single-controller cores.
 
 - **The bridge crashed when BizHawk was opened without the socket flags**
   (e.g. from the Windows GUI): `socketServerIsConnected` threw a .NET

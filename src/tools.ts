@@ -260,6 +260,77 @@ export const TOOLS: Tool[] = [
     },
   },
 
+  // ── Memory snapshots (unknown-value search) ───────────────────────────
+
+  {
+    name: "bizhawk_snapshot_memory",
+    description:
+      "PURPOSE: Save a named copy of a memory region inside BizHawk, for finding values you don't know yet (\"which byte is HP?\") with bizhawk_compare_snapshots. " +
+      "USAGE: Snapshot, make something happen (frame_advance, play_input_sequence, a hit), snapshot again under another name, then compare. For a CONTROLLED test, load the same savestate twice and replay the same input with and without the action, snapshotting both at the same frame: comparing those two snapshots with op 'changed' leaves only addresses the action affected, ruling out timers and counters that change anyway. Use bizhawk_search_memory instead when you already know the value. " +
+      "BEHAVIOR: No side effects on the game — pure read. Runs inside one bridge tick, so large regions briefly stall the emulator. The snapshot stays in the bridge (it survives load_state) until deleted or the bridge restarts; only a summary comes back. Reusing a name replaces that snapshot. Limits: 16 MiB per snapshot (256 KiB on builds without a bulk reader), 64 MiB for all snapshots together. Returns an error for a range past the end of the domain, an unknown domain, or a full store (delete old snapshots with bizhawk_delete_snapshots). " +
+      "RETURNS: One line with the name, domain, range, frame number and store usage.",
+    inputSchema: {
+      type: "object",
+      required: ["name"],
+      properties: {
+        name:   { type: "string", minLength: 1, description: "Label for this snapshot, e.g. 'hp_before' or 'control_f120'. Reusing a name replaces it." },
+        domain: { type: "string", description: DOMAIN_PARAM_DESC },
+        start:  { type: "integer", minimum: 0, default: 0, description: "First byte offset within the domain (default 0)." },
+        length: { type: "integer", minimum: 1, description: "Bytes to copy. Omit to copy from `start` to the end of the domain. Both snapshots in a comparison must use the same domain, start and length." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "bizhawk_compare_snapshots",
+    description:
+      "PURPOSE: Find addresses whose value changed (or didn't) between two snapshots, the core of an unknown-value RAM search. " +
+      "USAGE: Compare 'before' and 'after' with an op: changed, unchanged, increased, decreased, changed_by (after − before == value), or equal_to (after == value). Pass save_as to keep the matching addresses as a candidate set, then narrow it on later comparisons with candidates=<that set>, exactly like repeated scans in BizHawk's RAM Search. Typical loop: take damage → compare 'decreased' save_as=hp; heal → compare with candidates=hp 'increased' save_as=hp; repeat until a few remain, then confirm with bizhawk_read8/write8. " +
+      "BEHAVIOR: No side effects — pure comparison inside the bridge; memory isn't re-read. Both snapshots must cover the same domain, start and length. Values are decoded at `width` (u8/u16/u32 or signed s8/s16/s32), little-endian unless big_endian is true; with aligned (default true) multi-byte values are checked only at multiples of their width from the snapshot start. Lists at most max_results matches (with before/after values); `count` is always the true total. A candidate set holds up to 1,000,000 addresses. Returns an error for unknown names, mismatched snapshots, a candidate set from another domain, or a missing `value` for changed_by/equal_to. " +
+      "RETURNS: A summary line (matches, addresses checked, saved set), then one line per listed match: address, before → after.",
+    inputSchema: {
+      type: "object",
+      required: ["before", "after", "op"],
+      properties: {
+        before:      { type: "string", description: "Name of the earlier snapshot." },
+        after:       { type: "string", description: "Name of the later snapshot (or, for a controlled test, the run with the action)." },
+        op:          { type: "string", enum: ["changed", "unchanged", "increased", "decreased", "changed_by", "equal_to"], description: "Which addresses to keep." },
+        value:       { type: "integer", description: "For changed_by: the exact difference (after − before), e.g. -1 for 'went down by one'. For equal_to: the value 'after' must hold." },
+        width:       { type: "string", enum: ["u8", "u16", "u32", "s8", "s16", "s32"], default: "u8", description: "How many bytes make one value and whether it's signed (signed matters for increased/decreased across 0)." },
+        big_endian:  { type: "boolean", default: false, description: "Decode multi-byte values big-endian (e.g. Genesis 68K RAM, N64)." },
+        aligned:     { type: "boolean", default: true, description: "Check multi-byte values only at multiples of their width. Set false to check every byte offset." },
+        candidates:  { type: "string", description: "Only check the addresses in this saved candidate set (from an earlier save_as)." },
+        save_as:     { type: "string", description: "Save the matching addresses as a candidate set with this name (replaces any set with the same name)." },
+        max_results: { type: "integer", minimum: 1, maximum: 5000, default: 200, description: "How many matches to list (count is always the full total)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "bizhawk_list_snapshots",
+    description:
+      "PURPOSE: List the snapshots and candidate sets currently stored in the bridge. " +
+      "USAGE: Check what's available before comparing, or see how full the 64 MiB store is. " +
+      "BEHAVIOR: No side effects — pure read of the bridge's own state. Everything listed disappears when the bridge script restarts (e.g. BizHawk closes). " +
+      "RETURNS: One line per snapshot (name, domain, range, frame) and per candidate set (name, domain, width, address count), plus store usage.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "bizhawk_delete_snapshots",
+    description:
+      "PURPOSE: Free memory by deleting a snapshot or candidate set, or everything. " +
+      "USAGE: Delete snapshots you no longer need when the store fills up, or clear everything between investigations. " +
+      "BEHAVIOR: DESTRUCTIVE to the bridge's stored snapshots only (never touches game memory). With `name`, deletes the snapshot and/or candidate set with that name; without it, deletes everything. Deleting an unknown name is not an error (it reports 0). " +
+      "RETURNS: Single line with how many entries were deleted.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Snapshot or candidate set to delete. Omit to delete everything." },
+      },
+      additionalProperties: false,
+    },
+  },
+
   // ── Input ───────────────────────────────────────────────────────────────
 
   {
@@ -712,6 +783,78 @@ function describeBreakpoint(b: BreakpointSummary): string {
     `${b.dropped ? `, ${b.dropped} dropped` : ""} (max ${b.max_hits})`;
 }
 
+interface SnapshotInfo {
+  name: string; domain?: string; start: number; length: number; frame?: number;
+  used_bytes: number; max_bytes: number;
+}
+export interface CompareResult {
+  count: number;
+  checked: number;
+  results: { address: number; before: number; after: number }[] | Record<string, never>;
+  truncated: boolean;
+  domain?: string;
+  saved_as?: string;
+  saved_count?: number;
+}
+export interface SnapshotList {
+  snapshots: { name: string; domain?: string; start: number; length: number; frame?: number }[] | Record<string, never>;
+  candidates: { name: string; domain?: string; width: string; count: number }[] | Record<string, never>;
+  used_bytes: number;
+  max_bytes: number;
+}
+
+/**
+ * Format a byte count as KiB/MiB for summaries.
+ * @returns e.g. "32 KiB" or "1.5 MiB".
+ * @requires Nothing.
+ */
+function kb(n: number): string {
+  return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : `${Math.round(n / 1024)} KiB`;
+}
+
+/**
+ * json.lua encodes an empty Lua table as {} rather than [], so list fields may arrive as objects.
+ * @returns the value as an array (empty for {}).
+ * @requires Nothing.
+ */
+function asList<T>(v: T[] | Record<string, never> | undefined): T[] {
+  return Array.isArray(v) ? v : [];
+}
+
+/**
+ * Format a snapshot comparison for the caller.
+ * @returns A summary line plus one "address: before → after" line per listed match.
+ * @requires Nothing.
+ */
+export function describeCompare(p: Record<string, unknown>, r: CompareResult): string {
+  const width = (p.width as string) ?? "u8";
+  const opText = p.value !== undefined ? `${p.op} ${p.value}` : String(p.op);
+  const scope = p.candidates ? `of candidate set '${p.candidates}'` : `in ${r.domain ?? "the snapshot range"}`;
+  const results = asList(r.results);
+  let head = `${r.count} of ${r.checked} address(es) ${scope} ${opText} (${width}), '${p.before}' → '${p.after}'.`;
+  if (r.saved_as) head += ` Saved ${r.saved_count} as candidate set '${r.saved_as}'.`;
+  if (r.truncated) head += ` Listing the first ${results.length}.`;
+  const lines = results.map((m) => `${addrHex(m.address)}: ${m.before} → ${m.after}`);
+  return [head, ...lines].join("\n");
+}
+
+/**
+ * Format the snapshot store listing.
+ * @returns One line per snapshot and per candidate set, plus usage.
+ * @requires Nothing.
+ */
+export function describeSnapshotList(r: SnapshotList): string {
+  const snaps = asList(r.snapshots), cands = asList(r.candidates);
+  const lines = [`Store: ${kb(r.used_bytes)} of ${kb(r.max_bytes)} used.`];
+  lines.push(snaps.length ? "Snapshots:" : "No snapshots.");
+  for (const s of snaps) {
+    lines.push(`  ${s.name}: ${s.domain ?? "?"} ${addrHex(s.start)}..${addrHex(s.start + s.length - 1)} (${s.length} bytes), frame ${s.frame ?? "?"}`);
+  }
+  lines.push(cands.length ? "Candidate sets:" : "No candidate sets.");
+  for (const c of cands) lines.push(`  ${c.name}: ${c.count} address(es) in ${c.domain ?? "?"} (${c.width})`);
+  return lines.join("\n");
+}
+
 export interface EvalResult {
   values: unknown[] | Record<string, unknown>;
   count: number;
@@ -882,6 +1025,29 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
       case "bizhawk_write_range": {
         const r = await bh.call<{ written: number }>("write_range", { address: a(), bytes: p.bytes, ...dom() });
         return ok(`Wrote ${r.written} bytes → ${addrHex(a())}${p.domain ? ` (${p.domain})` : ""}`);
+      }
+
+      case "bizhawk_snapshot_memory": {
+        const params: Record<string, unknown> = { name: p.name };
+        for (const k of ["domain", "start", "length"]) if (p[k] !== undefined) params[k] = p[k];
+        const r = await bh.call<SnapshotInfo>("snapshot_memory", params);
+        return ok(`Snapshot '${r.name}': ${r.domain ?? "current domain"} ${addrHex(r.start)}..${addrHex(r.start + r.length - 1)} ` +
+          `(${r.length} bytes) at frame ${r.frame ?? "?"}. Store: ${kb(r.used_bytes)} of ${kb(r.max_bytes)} used.`);
+      }
+      case "bizhawk_compare_snapshots": {
+        const params: Record<string, unknown> = { before: p.before, after: p.after, op: p.op };
+        for (const k of ["value", "width", "big_endian", "aligned", "candidates", "save_as", "max_results"]) {
+          if (p[k] !== undefined) params[k] = p[k];
+        }
+        return ok(describeCompare(p, await bh.call<CompareResult>("compare_snapshots", params)));
+      }
+      case "bizhawk_list_snapshots": {
+        const r = await bh.call<SnapshotList>("list_snapshots");
+        return ok(describeSnapshotList(r));
+      }
+      case "bizhawk_delete_snapshots": {
+        const r = await bh.call<{ deleted: number }>("delete_snapshots", p.name !== undefined ? { name: p.name } : {});
+        return ok(`Deleted ${r.deleted} ${r.deleted === 1 ? "entry" : "entries"}${p.name !== undefined ? ` named '${p.name}'` : " (everything)"}.`);
       }
 
       case "bizhawk_search_memory": {

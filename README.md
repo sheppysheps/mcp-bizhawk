@@ -172,6 +172,10 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 | `bizhawk_write8` / `bizhawk_write16` / `bizhawk_write32` | Write to memory |
 | `bizhawk_read_range` | Read up to 4096 bytes as a byte array |
 | `bizhawk_write_range` | Write up to 4096 bytes from a byte array |
+| `bizhawk_search_memory` | Find addresses holding a **known** value (8/16/32-bit), then narrow with a follow-up scan |
+| `bizhawk_snapshot_memory` | Save a named copy of a memory region inside BizHawk (up to 16 MiB each, 64 MiB total) |
+| `bizhawk_compare_snapshots` | Find **unknown** values: changed, unchanged, increased, decreased, changed by N, equal to N; save and narrow candidate sets like BizHawk's RAM Search |
+| `bizhawk_list_snapshots` / `bizhawk_delete_snapshots` | See or free stored snapshots and candidate sets |
 | `bizhawk_press_buttons` | Set joypad state for one player; keys are button names, values booleans |
 | `bizhawk_frame_advance` | Step the emulator by N frames |
 | `bizhawk_pause` / `bizhawk_unpause` | Pause / resume emulation |

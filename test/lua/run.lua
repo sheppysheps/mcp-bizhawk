@@ -4,6 +4,7 @@
 
 package.path = "lua/?.lua;test/lua/?.lua;" .. package.path
 local results = require("sandbox_spec")(require("sandbox"), require("json"))
+for _, r in ipairs(require("snapshot_spec")(require("snapshot"))) do results[#results + 1] = r end
 
 local failed = 0
 for _, r in ipairs(results) do

@@ -28,6 +28,8 @@
 -- Verify with `mcp-bizhawk` startup log: should print "BizHawk client connected".
 
 local json = require("json")
+-- Memory snapshot store and comparisons (pure Lua, no system access).
+local snapshot = require("snapshot")
 -- lua/sandbox.lua (opt-in arbitrary Lua) is NOT loaded here: it's required
 -- lazily on the first eval_lua call, so ordinary sessions never load it.
 
@@ -86,6 +88,8 @@ local CAPS = {
     -- back to a read_u8 loop when neither is present.
     memory_read_bytes_as_array     = memory and has(memory, "read_bytes_as_array"),
     memory_readbyterange           = memory and has(memory, "readbyterange"),
+    -- one byte per byte as a Lua string: the compact form snapshots are kept in
+    memory_read_bytes_as_binary_string = memory and has(memory, "read_bytes_as_binary_string"),
     -- mainmemory (subset of memory, scoped to system main RAM)
     mainmemory_read_u8 = mainmemory and has(mainmemory, "read_u8"),
     -- gameinfo
@@ -327,6 +331,124 @@ local function cmd_search_memory(p)
                  scanned = length, truncated = total > #matches }
     end)
 end
+
+-- ── Memory snapshots ────────────────────────────────────────────────────────
+--
+-- Named copies of a memory region, kept here in the bridge so unknown-value
+-- searches (changed / increased / ...) never ship whole RAMs to the agent.
+-- Comparison logic lives in lua/snapshot.lua (pure Lua, tested in CI).
+-- Snapshots survive load_state: they live in this script, not the emulator.
+
+local SNAPSHOT_MAX_BYTES     = 16 * 1024 * 1024  -- one snapshot
+local SNAPSHOT_LOOP_MAX      = 262144            -- one snapshot without a bulk reader
+local SNAPSHOT_STORE_BYTES   = 64 * 1024 * 1024  -- all snapshots together
+local SNAPSHOT_MAX_CANDIDATES = 1000000          -- addresses per saved candidate set
+local SNAPSHOT_RESULT_MAX    = 5000              -- matches listed per comparison
+
+local snapshots = snapshot.new_store({
+    max_total_bytes = SNAPSHOT_STORE_BYTES,
+    max_candidates  = SNAPSHOT_MAX_CANDIDATES,
+})
+
+--- Read `length` bytes at `start` of the current domain as a binary string.
+--- @return a Lua string of exactly `length` bytes. Raises when the region is
+---         over the cap for the read method this build supports.
+--- @requires memory.read_bytes_as_binary_string, else a bulk reader, else read_u8.
+local function read_region_string(start, length)
+    if CAPS.memory_read_bytes_as_binary_string then
+        if length > SNAPSHOT_MAX_BYTES then
+            error(string.format("snapshot length %d exceeds the %d-byte cap; snapshot a smaller range", length, SNAPSHOT_MAX_BYTES))
+        end
+        return memory.read_bytes_as_binary_string(start, length)
+    end
+    local bytes = (length <= SNAPSHOT_MAX_BYTES) and bulk_read_bytes(start, length) or nil
+    if not bytes then
+        if length > SNAPSHOT_LOOP_MAX then
+            error(string.format("snapshot length %d exceeds the %d-byte cap for builds without a bulk reader", length, SNAPSHOT_LOOP_MAX))
+        end
+        bytes = {}
+        for i = 1, length do bytes[i] = memory.read_u8(start + i - 1) end
+    end
+    local parts = {}
+    for i = 1, length, 4096 do
+        parts[#parts + 1] = string.char(table.unpack(bytes, i, math.min(i + 4095, length)))
+    end
+    return table.concat(parts)
+end
+
+--- Take a named snapshot of a domain region (default: the whole domain).
+--- @return `{ name, domain, start, length, frame, used_bytes, max_bytes }`.
+---         Raises for a missing name, bad range, or a full store.
+--- @requires memory domain APIs; lua/snapshot.lua store.
+local function cmd_snapshot_memory(p)
+    local name = p.name
+    if type(name) ~= "string" or name == "" then error("name required (a label like 'before_jump')") end
+    local start = p.start or 0
+    if start < 0 then error("start must be >= 0") end
+    local domain = p.domain or (CAPS.memory_get_current_memorydomain and memory.getcurrentmemorydomain()) or nil
+    return in_domain(p.domain, function()
+        local size = CAPS.memory_get_memorydomainsize and memory.getmemorydomainsize() or nil
+        local length = p.length or (size and size - start)
+        if not length then error("no `length` given and this build can't report the domain size") end
+        if length < 1 then error("length must be >= 1") end
+        if size and start + length > size then
+            error(string.format("range 0x%X+%d runs past the end of the domain (size %d)", start, length, size))
+        end
+        local rec = snapshots.put(name, {
+            domain = domain, start = start, data = read_region_string(start, length),
+            frame = CAPS.framecount and emu.framecount() or nil,
+        })
+        local info = snapshots.list()
+        return { name = name, domain = rec.domain, start = start, length = #rec.data, frame = rec.frame,
+                 used_bytes = info.used_bytes, max_bytes = info.max_bytes }
+    end)
+end
+
+--- Compare two snapshots, optionally only at a saved candidate set's addresses.
+--- @return `{ count, checked, results = {{address, before, after}...}, truncated, saved_as, saved_count }`.
+---         Raises on unknown names, mismatched snapshots, or bad options.
+--- @requires lua/snapshot.lua.
+local function cmd_compare_snapshots(p)
+    local before, after = snapshots.get(p.before), snapshots.get(p.after)
+    local width = p.width or "u8"
+    local cand_list
+    if p.candidates then
+        local c = snapshots.get_candidates(p.candidates)
+        if c.domain ~= before.domain then
+            error(string.format("candidate set '%s' is for domain '%s', but the snapshots are '%s'", p.candidates, tostring(c.domain), tostring(before.domain)))
+        end
+        cand_list = c.addresses
+    end
+    local max_results = p.max_results or 200
+    if max_results < 1 then max_results = 1 elseif max_results > SNAPSHOT_RESULT_MAX then max_results = SNAPSHOT_RESULT_MAX end
+    local aligned = p.aligned
+    if aligned == nil then aligned = true end
+    local r = snapshot.compare(before, after, {
+        op = p.op, width = width, big_endian = p.big_endian == true, aligned = aligned, value = p.value,
+        candidates = cand_list, max_results = max_results, max_candidates = SNAPSHOT_MAX_CANDIDATES,
+    })
+    local out = { count = r.count, checked = r.checked, results = r.results, truncated = r.count > #r.results,
+                  domain = before.domain }
+    if p.save_as then
+        if not r.addresses then
+            error(string.format("%d matches is over the %d-address limit for a candidate set; narrow the range first",
+                r.count, SNAPSHOT_MAX_CANDIDATES))
+        end
+        snapshots.put_candidates(p.save_as, { domain = before.domain, width = width, addresses = r.addresses })
+        out.saved_as, out.saved_count = p.save_as, #r.addresses
+    end
+    return out
+end
+
+--- List stored snapshots and candidate sets.
+--- @return store.list() output.
+--- @requires lua/snapshot.lua.
+local function cmd_list_snapshots(p) return snapshots.list() end
+
+--- Delete one snapshot / candidate set by name, or everything when name is omitted.
+--- @return `{ deleted = n }`.
+--- @requires lua/snapshot.lua.
+local function cmd_delete_snapshots(p) return { deleted = snapshots.delete(p.name) } end
 
 local function cmd_list_memory_domains(p)
     if not CAPS.memory_get_memorydomain_list then
@@ -852,6 +974,10 @@ local HANDLERS = {
     read_range           = cmd_read_range,
     write_range          = cmd_write_range,
     search_memory        = cmd_search_memory,
+    snapshot_memory      = cmd_snapshot_memory,
+    compare_snapshots    = cmd_compare_snapshots,
+    list_snapshots       = cmd_list_snapshots,
+    delete_snapshots     = cmd_delete_snapshots,
     list_memory_domains  = cmd_list_memory_domains,
     press_buttons        = cmd_press_buttons,
     press_buttons_multi  = cmd_press_buttons_multi,
