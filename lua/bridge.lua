@@ -898,8 +898,21 @@ if not (comm and comm.socketServerSend and comm.socketServerResponse) then
     return
 end
 
-local ip   = comm.socketServerGetIp   and comm.socketServerGetIp()   or "(unknown)"
-local port = comm.socketServerGetPort and comm.socketServerGetPort() or "(unknown)"
+-- BizHawk 2.11 only creates its socket client when EmuHawk is started with
+-- --socket_ip / --socket_port. Opened from the GUI, there is no socket at all:
+-- socketServerGetIp returns nil and the other socket calls throw. Lua can't
+-- create it (socketServerSetIp/SetPort throw too), so explain and stop.
+local ip   = comm.socketServerGetIp   and comm.socketServerGetIp()   or nil
+local port = comm.socketServerGetPort and comm.socketServerGetPort() or nil
+if ip == nil then
+    console.log("[mcp-bizhawk] STOPPED: BizHawk's socket isn't set up. It only exists when EmuHawk is")
+    console.log("[mcp-bizhawk] started with these flags, which can't be set from the menus or from Lua:")
+    console.log("[mcp-bizhawk]     EmuHawk.exe --socket_ip=127.0.0.1 --socket_port=8766 --lua=<path>\\bridge.lua <rom>")
+    console.log("[mcp-bizhawk] Easiest fixes: use a shortcut whose Target has those flags (see the README),")
+    console.log("[mcp-bizhawk] or let the AI start BizHawk with the bizhawk_launch tool.")
+    console.log("[mcp-bizhawk] Use the port your mcp-bizhawk server listens on (BIZHAWK_PORT, default 8766).")
+    return
+end
 console.log(string.format("[mcp-bizhawk] socket server target: %s:%s", tostring(ip), tostring(port)))
 
 -- Receive timeout for socketServerResponse(). Default BizHawk timeout (5ms)
@@ -914,15 +927,26 @@ end
 console.log("[mcp-bizhawk] frame loop active — bridge is polling once per frame")
 
 -- Per-frame poll. Run forever.
-local last_connection_state = comm.socketServerIsConnected and comm.socketServerIsConnected() or true
+--- Ask BizHawk whether the socket is connected, without letting a .NET
+--- exception (e.g. a missing socket client) kill the bridge.
+--- @return boolean, or nil when BizHawk can't say.
+--- @requires comm.socketServerIsConnected (optional).
+local function socket_connected()
+    if not comm.socketServerIsConnected then return nil end
+    local ok, connected = pcall(comm.socketServerIsConnected)
+    if ok then return connected end
+    return nil
+end
+
+local last_connection_state = socket_connected()
 local tick_count = 0
 while true do
     tick_count = tick_count + 1
 
     -- Watch for connection state changes (cheap to check once per second).
-    if tick_count % 60 == 0 and comm.socketServerIsConnected then
-        local connected = comm.socketServerIsConnected()
-        if connected ~= last_connection_state then
+    if tick_count % 60 == 0 then
+        local connected = socket_connected()
+        if connected ~= nil and connected ~= last_connection_state then
             console.log("[mcp-bizhawk] socket connected = " .. tostring(connected))
             last_connection_state = connected
         end

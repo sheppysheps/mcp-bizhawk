@@ -75,19 +75,26 @@ There are two pieces to configure: telling BizHawk where to connect, and loading
 
 ### 1. Point BizHawk at the MCP server
 
-Easiest: launch BizHawk with the socket flags directly.
+BizHawk 2.11 only creates its socket when EmuHawk is **started with the socket flags**. Opening it normally (double-clicking `EmuHawk.exe` or a ROM) gives it no socket, and neither Lua nor any menu we found can add one later. If you load the bridge anyway, the Lua Console prints `STOPPED: BizHawk's socket isn't set up` along with these fixes.
 
-```bash
-EmuHawk.exe --socket_ip=127.0.0.1 --socket_port=8766 <path/to/rom>
-```
+Pick one:
 
-(Adjust port if you're overriding `BIZHAWK_PORT`.)
+- **Let the AI start it:** set `BIZHAWK_EXE` (see [Configuration](#configuration)), then the agent calls `bizhawk_launch`. The flags and the bridge script are handled for you.
+- **A Windows shortcut you double-click:** right-click `EmuHawk.exe` → **Create shortcut**, open the shortcut's **Properties**, and set **Target** to:
+  ```
+  "C:\path\to\EmuHawk.exe" --socket_ip=127.0.0.1 --socket_port=8766 --lua="C:\path\to\mcp-bizhawk\lua\bridge.lua"
+  ```
+  Opening BizHawk through this shortcut also loads the bridge, so you can skip step 2. Add a ROM path at the end to boot straight into a game.
+- **Command line:**
+  ```bash
+  EmuHawk.exe --socket_ip=127.0.0.1 --socket_port=8766 --lua=path/to/lua/bridge.lua <path/to/rom>
+  ```
 
-Alternative: configure persistently via **Settings → Customize → External Tools** in BizHawk's UI.
+Use the port your server listens on (`BIZHAWK_PORT`, default `8766`).
 
 ### 2. Load the bridge script
 
-In BizHawk: **Tools → Lua Console → Open Script** → select `lua/bridge.lua` from this repo.
+Skip this if you used `--lua=` above. Otherwise, in BizHawk: **Tools → Lua Console → Open Script** → select `lua/bridge.lua` from this repo. Load only `bridge.lua`: it loads `json.lua` and `sandbox.lua` itself.
 
 You should see in the Lua Console:
 ```

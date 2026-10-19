@@ -50,6 +50,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The bridge crashed when BizHawk was opened without the socket flags**
+  (e.g. from the Windows GUI): `socketServerIsConnected` threw a .NET
+  NullReferenceException. BizHawk 2.11 only creates its socket client from
+  `--socket_ip` / `--socket_port`, and Lua can't create one later, so the
+  bridge now detects this at startup and prints how to fix it (shortcut,
+  command line or `bizhawk_launch`). The README no longer suggests a menu
+  setting for it.
+
 - The server kept treating the bridge as ready after BizHawk disconnected.
 
 - **The bridge stopped answering while BizHawk was paused.** Its main loop
