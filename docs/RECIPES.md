@@ -2,7 +2,9 @@
 
 Practical examples of driving BizHawk through Claude (or any MCP client). Each recipe is self-contained — copy-paste the prompt at the top of a Claude conversation with `mcp-bizhawk` registered, and Claude will work through the tool calls.
 
-> Prerequisites: BizHawk running with `--socket_ip=127.0.0.1 --socket_port=8766`, ROM loaded, `lua/bridge.lua` open in **Tools → Lua Console**. Sanity-check with `bizhawk_ping` first.
+> Prerequisites: BizHawk running with `--socket_ip=127.0.0.1 --socket_port=8766`, ROM loaded, `lua/bridge.lua` open in **Tools → Lua Console**, or let the agent start everything with `bizhawk_launch`. Sanity-check with `bizhawk_ping` first.
+>
+> Recipes 1 and 2 diff RAM by pulling `read_range` dumps into the conversation. That's fine for small RAMs like the NES's 2 KB. For anything bigger, the planned snapshot and compare tools ([FORK-GOALS.md](FORK-GOALS.md#roadmap)) do the diff inside BizHawk.
 
 The big BizHawk superpower: **the same tools work across every system its cores cover**. The only thing that changes per platform is the memory-domain name (`WRAM` for SNES vs `RAM` for NES vs `RDRAM` for N64) and the button names. Use `bizhawk_get_info` and `bizhawk_list_memory_domains` to discover both for any loaded ROM.
 

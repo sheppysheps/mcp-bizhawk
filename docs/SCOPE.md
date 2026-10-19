@@ -1,6 +1,8 @@
 # mcp-bizhawk — scope document
 
-Status: planning. No code yet. Companion to mcp-mgba / mcp-pine / mcp-retroarch — same pattern, **inverted transport architecture**, multi-system breadth.
+> **Historical document.** This is upstream's original plan, written before any code. Everything in it shipped. One risk turned out wrong: BizHawk 2.11's socket can only be set up with EmuHawk's `--socket_ip` / `--socket_port` flags, not from the menus or from Lua. For this fork's goals and roadmap, see [FORK-GOALS.md](FORK-GOALS.md).
+
+Status (original): planning. No code yet. Companion to mcp-mgba / mcp-pine / mcp-retroarch — same pattern, **inverted transport architecture**, multi-system breadth.
 
 ## Premise
 
