@@ -262,6 +262,34 @@ Use `width` (`u16`, `s16`, …) for values wider than a byte, `big_endian` on bi
 
 ---
 
+## 11. Find byte patterns and text in an unknown encoding
+
+> "Find where the game stores its dialogue, and work out how the text is encoded."
+
+`bizhawk_search_bytes` searches inside BizHawk and returns only the matches.
+
+**Relative search** is the standard ROM-hacking trick for text in an encoding you don't know yet. Pick a word you've seen on screen, ideally 5 letters or more, written in one case:
+
+```
+bizhawk_search_bytes(mode="relative", text="SHANTAE", domain="ROM")
+→ 0xA05CA: 53 48 41 4E 54 41 45 29 3A 20 5B 31 …  (S = 0x53, A = 0x41)
+```
+
+The search ignores what value each letter is stored as. It matches byte runs whose *differences* equal the letters' differences (S→H is −11, H→A is −7, and so on), then reports the inferred mapping. `A = 0x41` means plain ASCII; something like `A = 0x80` means a custom table, so read the text with `0x80 = A, 0x81 = B, …` and fill in punctuation from what's around it. Spaces and punctuation in your word are wildcards, because games often encode them separately.
+
+**Hex patterns** find code idioms and data headers. `??` matches any byte:
+
+```
+bizhawk_search_bytes(mode="hex", pattern="CD 40 05", domain="ROM")   # every SM83 "call $0540"
+bizhawk_search_bytes(mode="hex", pattern="3E ?? E0 FF", domain="ROM") # ld a,?? / ldh ($FF),a
+```
+
+**Text mode** finds exact ASCII or UTF-8, such as a cartridge header title. To search what was on screen at a particular moment, snapshot VRAM or a tile map with `bizhawk_snapshot_memory`, then pass `snapshot="name"` to search that copy.
+
+On Shantae (GBC), relative search over the whole 4 MiB ROM takes about 0.7 s and shows its dialogue is plain ASCII with bracketed control codes. Hex and text searches take about 0.1 s.
+
+---
+
 ## Tips for Claude prompts
 
 - **Always start with `bizhawk_get_info`** so Claude knows which system and which memory domains are live before reasoning about addresses.
