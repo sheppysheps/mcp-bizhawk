@@ -4,6 +4,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { BizhawkServer } from "./bizhawk.js";
 import { registerTools } from "./tools.js";
 import { BizhawkLauncher } from "./launcher.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// Report the real package version to MCP clients (dist/index.js → ../package.json).
+const PACKAGE_VERSION: string = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+).version;
 
 const HOST = process.env.BIZHAWK_HOST ?? "127.0.0.1";
 const PORT = parseInt(process.env.BIZHAWK_PORT ?? "8766", 10);
@@ -11,24 +18,24 @@ const PORT = parseInt(process.env.BIZHAWK_PORT ?? "8766", 10);
 async function main() {
   const bh = new BizhawkServer({ host: HOST, port: PORT });
 
-  // Start the TCP listener immediately. Tool calls will queue up until BizHawk
-  // connects (via lua/bridge.lua loaded in BizHawk's Lua Console + the
-  // socket server IP/port configured to point here).
+  // Start the TCP listener immediately. If another session's mcp-bizhawk holds
+  // the port, stay up anyway: tools explain the situation and the listener
+  // retries in the background, taking over when the port frees up.
   try {
-    await bh.start();
-    process.stderr.write(
-      `[mcp-bizhawk] ${bh.describeTarget()}; waiting for BizHawk to connect...\n` +
-      `             1. In BizHawk: Settings > Customize > External Tools (or use --socket_ip / --socket_port flags)\n` +
-      `             2. Set socket server target to ${HOST}:${PORT}\n` +
-      `             3. Tools > Lua Console > Open Script > select lua/bridge.lua from this repo\n`,
-    );
+    if (await bh.startOrWait() === "listening") {
+      process.stderr.write(
+        `[mcp-bizhawk] ${bh.describeTarget()}; waiting for BizHawk to connect.\n` +
+        `             Start it with the bizhawk_launch tool, or run EmuHawk with\n` +
+        `             --socket_ip=${HOST} --socket_port=${PORT} --lua=<this repo>/lua/bridge.lua\n`,
+      );
+    }
   } catch (err) {
     process.stderr.write(`[mcp-bizhawk] FATAL: could not bind ${HOST}:${PORT}: ${err}\n`);
     process.exit(1);
   }
 
   const server = new Server(
-    { name: "mcp-bizhawk", version: "0.1.0" },
+    { name: "mcp-bizhawk", version: PACKAGE_VERSION },
     { capabilities: { tools: {} } },
   );
 

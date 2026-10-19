@@ -4,6 +4,8 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
+import type { JsonSchemaType, JsonSchemaValidator } from "@modelcontextprotocol/sdk/validation";
 import { BizhawkServer } from "./bizhawk.js";
 import { BizhawkLauncher } from "./launcher.js";
 
@@ -888,6 +890,10 @@ export function describeEval(r: EvalResult): string {
  * @requires BizhawkLauncher (BIZHAWK_EXE configured); a listening BizhawkServer.
  */
 async function launchBizhawk(bh: BizhawkServer, launcher: BizhawkLauncher, rom: string, waitSeconds: number) {
+  if (!bh.isListening()) {
+    // The port belongs to another session; a BizHawk started now would connect THERE.
+    throw new Error(`Can't launch: ${bh.notListeningReason()}`);
+  }
   if (bh.isConnected()) throw new Error("BizHawk is already connected. Use bizhawk_close first to restart it.");
   const r = await launcher.launch(rom, bh.target());
   const ready = await bh.waitForBridge(waitSeconds * 1000);
@@ -944,15 +950,35 @@ const OPT_IN_TOOLS: Record<string, keyof ToolOptions> = { bizhawk_eval_lua: "eva
  *          and calling them throws before anything is sent to BizHawk.
  * @requires A BizhawkServer for bridge calls; a BizhawkLauncher for launch/close.
  */
+/**
+ * Compile one argument validator per tool from its inputSchema.
+ * @returns Map of tool name → validator. Throws at startup if a schema is invalid,
+ *          so a broken schema can never ship silently.
+ * @requires The MCP SDK's Ajv-based validator (already an SDK dependency).
+ */
+export function compileArgValidators(tools: Tool[]): Map<string, JsonSchemaValidator<unknown>> {
+  const provider = new AjvJsonSchemaValidator();
+  return new Map(tools.map((t) => [t.name, provider.getValidator<unknown>(t.inputSchema as JsonSchemaType)]));
+}
+
 export function registerTools(server: Server, bh: BizhawkServer, launcher: BizhawkLauncher, opts: ToolOptions): void {
   const offered = TOOLS.filter((t) => !(t.name in OPT_IN_TOOLS) || opts[OPT_IN_TOOLS[t.name]]);
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: offered }));
+  const validators = compileArgValidators(TOOLS);
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args = {} } = req.params;
     if (name in OPT_IN_TOOLS && !opts[OPT_IN_TOOLS[name]]) {
       throw new Error(`${name} is turned off in this server's config. Only the user can enable it ` +
         `(BIZHAWK_EVAL_LUA=1 in the MCP server env). Don't ask them to unless they asked for Lua work.`);
+    }
+    // Reject malformed arguments up front. Without this, a typo such as a
+    // frame written {"Start": true} instead of {"buttons": {"Start": true}}
+    // reached the bridge and silently did nothing.
+    const check = validators.get(name);
+    if (check) {
+      const result = check(args);
+      if (!result.valid) throw new Error(`Invalid arguments for ${name}: ${result.errorMessage}`);
     }
     const p = args as Record<string, unknown>;
     const a = () => p.address as number;

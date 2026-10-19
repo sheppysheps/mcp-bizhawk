@@ -29,6 +29,8 @@ export interface BizhawkOptions {
   port?: number;
   /** Per-call timeout (ms). Default 10000. */
   timeoutMs?: number;
+  /** How long a call waits for BizHawk to connect before failing fast (ms). Default 2000. */
+  connectGraceMs?: number;
 }
 
 export class BizhawkServer {
@@ -46,11 +48,13 @@ export class BizhawkServer {
   private readonly host: string;
   private readonly port: number;
   private readonly timeoutMs: number;
+  private readonly connectGraceMs: number;
 
   constructor(opts: BizhawkOptions = {}) {
     this.host      = opts.host      ?? "127.0.0.1";
     this.port      = opts.port      ?? 8766;
     this.timeoutMs = opts.timeoutMs ?? 10000;
+    this.connectGraceMs = opts.connectGraceMs ?? 2000;
   }
 
   describeTarget(): string {
@@ -129,7 +133,66 @@ export class BizhawkServer {
     });
   }
 
+  /** Why the listener isn't bound (e.g. the port is taken), or null. */
+  private busyReason: string | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * Start listening, but treat "port already in use" as a waiting state
+   * instead of a fatal error: keep retrying every `retryMs` and make tool calls
+   * fail fast with an explanation until the port frees up. This happens when
+   * another Claude session's mcp-bizhawk already holds the port.
+   * @returns "listening" if bound now, or "busy" if the port is taken and
+   *          retries were scheduled. Rejects for any other listen error.
+   * @requires node:net.
+   */
+  async startOrWait(retryMs = 5000): Promise<"listening" | "busy"> {
+    try {
+      await this.start();
+      return "listening";
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+      this.busyReason =
+        `Port ${this.port} is already in use, most likely by another Claude session's mcp-bizhawk ` +
+        `(only one can own BizHawk's connection at a time). Close the bizhawk server in that session ` +
+        `(or the session), and this one takes over within ${Math.round(retryMs / 1000)} s; BizHawk then ` +
+        `needs restarting (bizhawk_launch) so it connects here. Or give this session its own BizHawk ` +
+        `with a different BIZHAWK_PORT.`;
+      process.stderr.write(`[mcp-bizhawk] ${this.busyReason}\n`);
+      this.retryTimer = setInterval(() => {
+        this.start().then(() => {
+          if (this.retryTimer) clearInterval(this.retryTimer);
+          this.retryTimer = null;
+          this.busyReason = null;
+          process.stderr.write(`[mcp-bizhawk] port ${this.port} is free now; ${this.describeTarget()}\n`);
+        }, () => { /* still busy; try again next tick */ });
+      }, retryMs);
+      this.retryTimer.unref();  // never keep the process alive just to retry
+      return "busy";
+    }
+  }
+
+  /**
+   * Whether this server owns the BizHawk port right now.
+   * @returns true once bound; false while the port is busy or before start.
+   * @requires Nothing.
+   */
+  isListening(): boolean {
+    return this.server !== null;
+  }
+
+  /**
+   * Explain why this server can't talk to BizHawk because it doesn't own the port.
+   * @returns The busy-port explanation, or a generic note if never started.
+   * @requires Nothing.
+   */
+  notListeningReason(): string {
+    return this.busyReason ?? `mcp-bizhawk isn't listening on ${this.host}:${this.port}.`;
+  }
+
   stop(): void {
+    if (this.retryTimer) clearInterval(this.retryTimer);
+    this.retryTimer = null;
     this.client?.destroy();
     this.client = null;
     this.server?.close();
@@ -275,8 +338,21 @@ export class BizhawkServer {
     this.sendFramed(msg);
   }
 
-  /** Enqueue a command and return a promise that resolves when BizHawk replies. */
+  /**
+   * Enqueue a command and wait for BizHawk's reply.
+   * @returns Promise of the bridge's result. Rejects at once (instead of after
+   *          the full timeout) when this server doesn't own the port, or when
+   *          no BizHawk has connected within `connectGraceMs`; rejects on an
+   *          RPC error or timeout otherwise.
+   * @requires A listening server and a connected bridge.lua.
+   */
   async call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (!this.server) throw new Error(this.notListeningReason());
+    if (!this.isConnected() && !(await this.waitFor(() => this.isConnected(), this.connectGraceMs))) {
+      throw new Error(
+        `BizHawk isn't connected to ${this.host}:${this.port}. Start it with bizhawk_launch, or open EmuHawk ` +
+        `with --socket_ip=${this.host} --socket_port=${this.port} and lua/bridge.lua loaded.`);
+    }
     return new Promise<T>((resolve, reject) => {
       const id = this.nextId++;
       const pending: PendingCmd = {

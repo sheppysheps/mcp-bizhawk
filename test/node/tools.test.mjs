@@ -17,6 +17,8 @@ function harness(opts = { evalLua: false }) {
   const bh = {
     call: async (method, params) => { calls.push({ method, params }); return {}; },
     isConnected: () => false,
+    isListening: () => true,
+    notListeningReason: () => "busy",
     isBridgeReady: () => true,
     waitForBridge: async () => true,
     waitForDisconnect: async () => true,
@@ -48,14 +50,35 @@ test("every description has PURPOSE / USAGE / BEHAVIOR / RETURNS", () => {
   }
 });
 
+/**
+ * Build the smallest arguments that satisfy a JSON schema (required fields only).
+ * @returns a value valid for `schema`, so tests reach the dispatcher past validation.
+ * @requires Nothing.
+ */
+function minimalValid(schema) {
+  if (schema.enum) return schema.enum[0];
+  switch (schema.type) {
+    case "integer": case "number": return schema.minimum ?? 0;
+    case "string": return "x".repeat(Math.max(1, schema.minLength ?? 1));
+    case "boolean": return false;
+    case "array": return Array.from({ length: schema.minItems ?? 0 }, () => minimalValid(schema.items ?? {}));
+    default: {
+      const out = {};
+      for (const k of schema.required ?? []) out[k] = minimalValid(schema.properties[k]);
+      return out;
+    }
+  }
+}
+
 test("every listed tool has a dispatch case (none hit 'Unknown tool')", async () => {
   const h = harness({ evalLua: true });
   for (const t of TOOLS) {
+    const args = minimalValid(t.inputSchema);
     try {
-      await h.call(t.name, { address: 0, value: 0, values: [0], path: "x", rom: "x.gbc", code: "return 1",
-                             buttons: {}, frames: [], kind: "write", id: 1, count: 1 });
+      await h.call(t.name, args);
     } catch (err) {
       assert.doesNotMatch(String(err), /Unknown tool/, `${t.name} has no dispatch case`);
+      assert.doesNotMatch(String(err), /Invalid arguments/, `${t.name}: generated args ${JSON.stringify(args)} failed validation`);
     }
   }
 });
@@ -105,4 +128,32 @@ test("describeCompare and describeSnapshotList accept json.lua's {} for empty li
   assert.match(list, /No snapshots\./);
   assert.match(list, /No candidate sets\./);
   assert.match(list, /0 KiB of 64\.0 MiB/);
+});
+
+test("malformed arguments are rejected before reaching the bridge", async () => {
+  const h = harness();
+  await assert.rejects(h.call("bizhawk_play_input_sequence", { frames: [{ Start: true }] }),
+    /Invalid arguments for bizhawk_play_input_sequence: .*must NOT have additional properties/);
+  await assert.rejects(h.call("bizhawk_read8", {}), /Invalid arguments for bizhawk_read8: .*must have required property 'address'/);
+  await assert.rejects(h.call("bizhawk_compare_snapshots", { before: "a", after: "b", op: "bigger" }), /must be equal to one of the allowed values/);
+  await assert.rejects(h.call("bizhawk_read8", { address: -1 }), /must be >= 0/);
+  assert.equal(h.calls.length, 0, "nothing may reach the bridge");
+  await h.call("bizhawk_play_input_sequence", { frames: [{ buttons: { Start: true } }] });
+  assert.deepEqual(h.calls.map((c) => c.method), ["play_input_sequence"]);
+});
+
+test("every tool's inputSchema compiles", async () => {
+  const { compileArgValidators } = await import("../../dist/tools.js");
+  assert.equal(compileArgValidators(TOOLS).size, TOOLS.length);
+});
+
+test("launch refuses while another session owns the port", async () => {
+  const handlers = new Map();
+  const server = { setRequestHandler: (schema, fn) => handlers.set(schema, fn) };
+  const bh = { isListening: () => false, notListeningReason: () => "Port 8766 is already in use", isConnected: () => false };
+  let launched = false;
+  registerTools(server, bh, { launch: async () => { launched = true; } }, { evalLua: false });
+  await assert.rejects(handlers.get(CallToolRequestSchema)({ params: { name: "bizhawk_launch", arguments: { rom: "x.gbc" } } }),
+    /Can't launch: Port 8766 is already in use/);
+  assert.equal(launched, false);
 });

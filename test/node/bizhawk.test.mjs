@@ -92,9 +92,37 @@ test("an error RESULT rejects the call with the bridge's message", () => withSer
   b.sock.destroy();
 }));
 
-test("a call nobody answers times out", () => withServer({ timeoutMs: 150 }, async (srv) => {
+test("a call a connected bridge never answers times out", () => withServer({ timeoutMs: 150 }, async (srv, port) => {
+  const b = await fakeBridge(port);  // connected, but never sends READY
   await assert.rejects(srv.call("ping"), /timed out \(150ms\)/);
+  b.sock.destroy();
 }));
+
+test("with no BizHawk connected, a call fails fast with setup advice", () => withServer({ connectGraceMs: 100 }, async (srv) => {
+  const t0 = Date.now();
+  await assert.rejects(srv.call("ping"), /BizHawk isn't connected to 127\.0\.0\.1:\d+\. Start it with bizhawk_launch/);
+  assert.ok(Date.now() - t0 < 2000, "should not wait for the full call timeout");
+}));
+
+test("a busy port is a waiting state, not a crash, and is taken over when freed", async () => {
+  const port = await freePort();
+  const blocker = net.createServer();
+  await new Promise((r) => blocker.listen(port, "127.0.0.1", r));
+  const srv = new BizhawkServer({ port, connectGraceMs: 50 });
+  try {
+    assert.equal(await srv.startOrWait(100), "busy");
+    assert.equal(srv.isListening(), false);
+    await assert.rejects(srv.call("ping"), /Port \d+ is already in use, most likely by another Claude session's mcp-bizhawk/);
+    await new Promise((r) => blocker.close(r));
+    const deadline = Date.now() + 3000;
+    while (!srv.isListening() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(srv.isListening(), true, "should bind once the port frees up");
+    await assert.rejects(srv.call("ping"), /BizHawk isn't connected/);
+  } finally {
+    srv.stop();
+    blocker.close();
+  }
+});
 
 test("disconnecting resets bridge readiness", () => withServer({}, async (srv, port) => {
   const b = await fakeBridge(port);
