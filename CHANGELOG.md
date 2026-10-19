@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`bizhawk_eval_lua` (opt-in):** run short Lua scripts inside BizHawk for
-  logic the fixed tools can't do in one call. Disabled by default: the first
+  logic the fixed tools can't do in one call. The server only offers it when
+  `BIZHAWK_EVAL_LUA=1` is set in its config, and the bridge loads
+  `lua/sandbox.lua` only on the first call. Disabled by default: the first
   call opens a confirmation dialog in BizHawk (with the system Asterisk sound
   on Windows). Its Accept button stays grayed out until the checkbox is
   ticked, and only clicking Accept enables the feature; Cancel or closing the
