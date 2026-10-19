@@ -28,8 +28,8 @@
 -- Verify with `mcp-bizhawk` startup log: should print "BizHawk client connected".
 
 local json = require("json")
--- Opt-in sandbox for caller-supplied Lua; all of its safety rules live there.
-local sandbox = require("sandbox")
+-- lua/sandbox.lua (opt-in arbitrary Lua) is NOT loaded here: it's required
+-- lazily on the first eval_lua call, so ordinary sessions never load it.
 
 -- Pending result from last frame's command. Sent back at the start of the
 -- next frame's round-trip (instead of a bare "READY").
@@ -712,9 +712,12 @@ end
 
 -- ── Arbitrary Lua (opt-in, sandboxed) ───────────────────────────────────────
 --
--- The gate starts closed and no dialog is shown. The first eval call while it's
--- closed opens the confirmation dialog in BizHawk and fails; only a person
--- ticking the checkbox opens the gate. See lua/sandbox.lua for every limit.
+-- Two switches, both off by default:
+--   1. The MCP server only offers bizhawk_eval_lua when BIZHAWK_EVAL_LUA=1 is
+--      set in its config; otherwise eval_lua is never sent here at all.
+--   2. Here, sandbox.lua is loaded on the first eval_lua call. That call opens
+--      the confirmation dialog and fails; only a person ticking the checkbox
+--      and clicking Accept opens the gate. See lua/sandbox.lua for every limit.
 
 --- Play the OS "Asterisk" sound so the human notices the confirmation dialog.
 ---
@@ -734,12 +737,24 @@ local function play_attention_sound()
     end)
 end
 
-local eval_gate = sandbox.new_gate({
-    forms  = forms,
-    has    = has,
-    now    = os.time,
-    notify = play_attention_sound,
-})
+local sandbox, eval_gate = nil, nil
+
+--- Load lua/sandbox.lua and build the consent gate on first use.
+--- @return the sandbox module and its gate (the same ones on every later call).
+---         Raises if sandbox.lua can't be found next to bridge.lua.
+--- @requires lua/sandbox.lua; BizHawk `forms`; play_attention_sound.
+local function load_sandbox()
+    if not sandbox then
+        sandbox = require("sandbox")
+        eval_gate = sandbox.new_gate({
+            forms  = forms,
+            has    = has,
+            now    = os.time,
+            notify = play_attention_sound,
+        })
+    end
+    return sandbox, eval_gate
+end
 
 -- Libraries handed to the sandbox. sandbox.lua copies only whitelisted names.
 local SANDBOX_HOST = {
@@ -768,6 +783,7 @@ end
 ---         or with the script's own compile/runtime/budget error.
 --- @requires lua/sandbox.lua; BizHawk `forms` for the confirmation dialog.
 local function cmd_eval_lua(p)
+    local sandbox, eval_gate = load_sandbox()
     if not eval_gate.enabled() then
         local state, wait = eval_gate.request()
         if state == "opened" or state == "open" then

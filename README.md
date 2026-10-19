@@ -157,6 +157,7 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 | `BIZHAWK_HOST` | `127.0.0.1`   | TCP host to listen on for BizHawk    |
 | `BIZHAWK_PORT` | `8766`        | TCP port to listen on for BizHawk    |
 | `BIZHAWK_EXE`  | *(unset)*     | Absolute path to `EmuHawk.exe` (or `EmuHawkMono.sh`). Only needed for `bizhawk_launch`; tool callers can't change it |
+| `BIZHAWK_EVAL_LUA` | *(unset)* | Set to `1` to offer `bizhawk_eval_lua`. Unset, agents don't see the tool and the confirmation dialog can never appear |
 
 ## Tools
 
@@ -181,7 +182,7 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 | `bizhawk_list_breakpoints` / `bizhawk_remove_breakpoint` | List breakpoints with hit counts / remove one or all |
 | `bizhawk_get_breakpoint_hits` | Fetch a breakpoint's logged hits (optionally clearing the buffer) |
 | `bizhawk_get_registers` | Read the CPU registers (names are core-specific) |
-| `bizhawk_eval_lua` | **Off by default.** Run a short Lua script in a read-only sandbox (pointer walks, struct decoding, `gui.*` drawing). The first call opens a confirmation dialog in BizHawk; only the person at the computer can enable it (tick the box, then click Accept). See [lua/sandbox.lua](lua/sandbox.lua) for exactly what scripts can reach |
+| `bizhawk_eval_lua` | **Off by default; only listed when `BIZHAWK_EVAL_LUA=1`.** Run a short Lua script in a read-only sandbox (pointer walks, struct decoding, `gui.*` drawing). The first call opens a confirmation dialog in BizHawk; only the person at the computer can enable it (tick the box, then click Accept). See [lua/sandbox.lua](lua/sandbox.lua) for exactly what scripts can reach |
 
 Breakpoints are *logging* breakpoints: BizHawk's Lua can't halt the CPU mid-instruction, so each hit is recorded (and `pause_on_hit` pauses at the end of that frame). Breakpoint addresses are on the CPU's system bus by default (pass `scope` for another), unlike the memory tools' per-domain offsets. Whether read and exec hooks fire, and whether the written value is reported, depends on the core: on Gambatte (GB/GBC) all three kinds fire, the value of a write is always reported as 0, and the registers include the mapped `ROMX BANK`/`WRAM BANK`.
 

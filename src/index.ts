@@ -32,7 +32,8 @@ async function main() {
     { capabilities: { tools: {} } },
   );
 
-  registerTools(server, bh, new BizhawkLauncher());
+  // bizhawk_eval_lua is opt-in at the config level too: off unless the user sets BIZHAWK_EVAL_LUA=1.
+  registerTools(server, bh, new BizhawkLauncher(), { evalLua: process.env.BIZHAWK_EVAL_LUA === "1" });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

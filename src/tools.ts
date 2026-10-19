@@ -787,11 +787,30 @@ async function closeBizhawk(bh: BizhawkServer, launcher: BizhawkLauncher) {
   throw new Error("BizHawk isn't connected and wasn't launched by this server, so there's nothing to close.");
 }
 
-export function registerTools(server: Server, bh: BizhawkServer, launcher: BizhawkLauncher): void {
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+export interface ToolOptions {
+  /** Offer bizhawk_eval_lua (BIZHAWK_EVAL_LUA=1). Off: the tool isn't listed and calls are refused. */
+  evalLua: boolean;
+}
+
+/** Tools gated behind a server-config switch, by name. */
+const OPT_IN_TOOLS: Record<string, keyof ToolOptions> = { bizhawk_eval_lua: "evalLua" };
+
+/**
+ * Register the MCP tool list and dispatcher.
+ * @returns nothing. Opt-in tools whose switch is off are left out of tools/list,
+ *          and calling them throws before anything is sent to BizHawk.
+ * @requires A BizhawkServer for bridge calls; a BizhawkLauncher for launch/close.
+ */
+export function registerTools(server: Server, bh: BizhawkServer, launcher: BizhawkLauncher, opts: ToolOptions): void {
+  const offered = TOOLS.filter((t) => !(t.name in OPT_IN_TOOLS) || opts[OPT_IN_TOOLS[t.name]]);
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: offered }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args = {} } = req.params;
+    if (name in OPT_IN_TOOLS && !opts[OPT_IN_TOOLS[name]]) {
+      throw new Error(`${name} is turned off in this server's config. Only the user can enable it ` +
+        `(BIZHAWK_EVAL_LUA=1 in the MCP server env). Don't ask them to unless they asked for Lua work.`);
+    }
     const p = args as Record<string, unknown>;
     const a = () => p.address as number;
     const dom = () => p.domain ? { domain: p.domain } : {};

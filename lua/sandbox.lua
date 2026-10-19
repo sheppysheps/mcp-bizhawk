@@ -6,6 +6,9 @@
 -- short script inside BizHawk solves that, but "run any code" is exactly what
 -- malware wants. This module keeps the feature as small as possible:
 --
+--   • NOT LOADED BY DEFAULT. The MCP server only offers the tool when the
+--     user sets BIZHAWK_EVAL_LUA=1, and bridge.lua requires this file only on
+--     the first eval call.
 --   • OFF BY DEFAULT. Code runs only after the human ticks the checkbox AND
 --     clicks Accept in the confirmation dialog this module opens inside
 --     BizHawk (rules at M.new_gate). The state lives in a local, is never
