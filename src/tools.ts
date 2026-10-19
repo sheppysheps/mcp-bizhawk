@@ -7,6 +7,7 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import type { JsonSchemaType, JsonSchemaValidator } from "@modelcontextprotocol/sdk/validation";
 import type { Backend, BackendStatus } from "./backend.js";
+import { dumpDir, resolveDumpPath, ensureDumpParent, finishDump, type DumpInfo } from "./dumps.js";
 
 const VALID_BUTTONS = [
   "A", "B", "X", "Y",                 // Face buttons
@@ -351,6 +352,29 @@ export const TOOLS: Tool[] = [
         length:      { type: "integer", minimum: 1, description: "Bytes to search (live memory only). Omit to search to the end of the domain." },
         snapshot:    { type: "string", description: "Search this stored snapshot instead of live memory (domain/start/length are then ignored)." },
         max_results: { type: "integer", minimum: 1, maximum: 1000, default: 50, description: "How many matches to list (count is always the full total)." },
+      },
+      additionalProperties: false,
+    },
+  },
+
+  {
+    name: "bizhawk_dump_memory",
+    description:
+      "PURPOSE: Write raw memory (a domain region or a stored snapshot) to a binary file, so external tools such as tile/sprite decoders, disassemblers or diff scripts can read it without the bytes passing through this conversation. " +
+      "USAGE: Prefer this over bizhawk_read_range for anything larger than a few hundred bytes you want to process with a script: e.g. dump VRAM + OAM at the same frame (pause first, or snapshot both and dump the snapshots), or a ROM bank, then run your own decoder on the files. Use `snapshot` to dump exactly what bizhawk_snapshot_memory captured. " +
+      "BEHAVIOR: Writes a file, so it is fenced in: files can only go inside the dump folder the user set (BIZHAWK_DUMP_DIR in the MCP config); `file` is a name relative to it (subfolders are created), must end in .bin, .raw or .dat (.bin is added if there's no extension), and existing files are kept unless overwrite=true. The bridge writes the bytes directly; this tool then verifies the size, hashes the file, and writes `<file>.json` next to it (domain, start, length, frame, sha256). Limit 16 MiB per dump. Returns an error if BIZHAWK_DUMP_DIR is unset, the name escapes the folder or has another extension, the file exists, or the range/snapshot is invalid. " +
+      "RETURNS: The absolute path, byte count, SHA-256, and the sidecar path.",
+    inputSchema: {
+      type: "object",
+      required: ["file"],
+      properties: {
+        file:      { type: "string", minLength: 1, description: "File name relative to the dump folder, e.g. \"shantae/f1500_vram.bin\". Must end in .bin/.raw/.dat (or have no extension)." },
+        domain:    { type: "string", description: DOMAIN_PARAM_DESC },
+        start:     { type: "integer", minimum: 0, default: 0, description: "First byte offset (live memory only)." },
+        length:    { type: "integer", minimum: 1, description: "Bytes to write (live memory only). Omit to dump from `start` to the end of the domain." },
+        snapshot:  { type: "string", description: "Dump this stored snapshot instead of live memory (domain/start/length are then ignored)." },
+        overwrite: { type: "boolean", default: false, description: "Replace the file if it already exists." },
+        note:      { type: "string", description: "Optional free text stored in the sidecar JSON, e.g. what was on screen." },
       },
       additionalProperties: false,
     },
@@ -1110,6 +1134,17 @@ export function registerTools(server: Server, backend: Backend & { notice?(): st
       case "bizhawk_delete_snapshots": {
         const r = await backend.call<{ deleted: number }>("delete_snapshots", p.name !== undefined ? { name: p.name } : {});
         return ok(`Deleted ${r.deleted} ${r.deleted === 1 ? "entry" : "entries"}${p.name !== undefined ? ` named '${p.name}'` : " (everything)"}.`);
+      }
+
+      case "bizhawk_dump_memory": {
+        const target = resolveDumpPath(dumpDir(), p.file as string, p.overwrite === true);
+        ensureDumpParent(target);
+        const params: Record<string, unknown> = { path: target };
+        for (const k of ["domain", "start", "length", "snapshot"]) if (p[k] !== undefined) params[k] = p[k];
+        const info = await backend.call<DumpInfo>("dump_memory", params);
+        const { sha256, sidecar } = finishDump(target, info, p.note !== undefined ? { note: p.note } : {});
+        const what = info.snapshot ? `snapshot '${info.snapshot}'` : `${info.domain ?? "memory"} ${addrHex(info.start)}..${addrHex(info.start + info.bytes - 1)}`;
+        return ok(`Wrote ${info.bytes} bytes (${what}, frame ${info.frame ?? "?"}) to ${target}\nSHA-256: ${sha256}\nSidecar: ${sidecar}`);
       }
 
       case "bizhawk_search_bytes": {

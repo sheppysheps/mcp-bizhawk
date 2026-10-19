@@ -459,6 +459,55 @@ local function cmd_delete_snapshots(p) return { deleted = snapshots.delete(p.nam
 
 local SEARCH_BYTES_RESULT_MAX = 1000
 
+--- Read either a stored snapshot or a live domain region as a binary string.
+--- @return data (string), base address, domain name. Raises on an unknown
+---         snapshot, a negative start, or a range past the end of the domain.
+--- @requires lua/snapshot.lua store; memory domain APIs for live reads.
+local function region_or_snapshot(p)
+    if p.snapshot then
+        local rec = snapshots.get(p.snapshot)
+        return rec.data, rec.start, rec.domain
+    end
+    local domain = p.domain or (CAPS.memory_get_current_memorydomain and memory.getcurrentmemorydomain()) or nil
+    local start = p.start or 0
+    if start < 0 then error("start must be >= 0") end
+    local data
+    in_domain(p.domain, function()
+        local size = CAPS.memory_get_memorydomainsize and memory.getmemorydomainsize() or nil
+        local length = p.length or (size and size - start)
+        if not length then error("no `length` given and this build can't report the domain size") end
+        if length < 1 then error("length must be >= 1") end
+        if size and start + length > size then
+            error(string.format("range 0x%X+%d runs past the end of the domain (size %d)", start, length, size))
+        end
+        data = read_region_string(start, length)
+    end)
+    return data, start, domain
+end
+
+--- Write a memory region (or a stored snapshot) to a file.
+---
+--- WHY THIS USES io: dumps exist so external tools can read raw memory
+--- without the bytes crossing the socket or the agent's context. The Node
+--- side (src/dumps.ts) only sends paths inside the user's BIZHAWK_DUMP_DIR,
+--- with a data extension, after its own checks; this handler writes exactly
+--- the requested bytes in binary mode and nothing else. The sandbox never
+--- sees `io`.
+--- @return `{ bytes, domain, start, frame, snapshot }`. Raises when the path is
+---         missing, the file can't be opened, or the region is invalid.
+--- @requires io (host side only); memory APIs or the snapshot store.
+local function cmd_dump_memory(p)
+    if type(p.path) ~= "string" or p.path == "" then error("path required") end
+    local data, start, domain = region_or_snapshot(p)
+    local f, err = io.open(p.path, "wb")
+    if not f then error("can't open dump file: " .. tostring(err)) end
+    local ok, werr = f:write(data)
+    f:close()
+    if not ok then error("writing the dump failed: " .. tostring(werr)) end
+    return { bytes = #data, domain = domain, start = start, snapshot = p.snapshot,
+             frame = CAPS.framecount and emu.framecount() or nil }
+end
+
 --- Search a domain region or a stored snapshot for bytes, text or relative text.
 --- @return `{ count, matches = {{address, preview, mapping?}...}, scanned, domain, truncated }`.
 ---         Raises on a bad pattern/mode, an unknown snapshot, or a bad range.
@@ -468,25 +517,7 @@ local function cmd_search_bytes(p)
     if max < 1 then max = 1 elseif max > SEARCH_BYTES_RESULT_MAX then max = SEARCH_BYTES_RESULT_MAX end
     local opts = { mode = p.mode, pattern = p.pattern, text = p.text, max_results = max }
 
-    local data, base, domain
-    if p.snapshot then
-        local rec = snapshots.get(p.snapshot)
-        data, base, domain = rec.data, rec.start, rec.domain
-    else
-        domain = p.domain or (CAPS.memory_get_current_memorydomain and memory.getcurrentmemorydomain()) or nil
-        local start = p.start or 0
-        if start < 0 then error("start must be >= 0") end
-        in_domain(p.domain, function()
-            local size = CAPS.memory_get_memorydomainsize and memory.getmemorydomainsize() or nil
-            local length = p.length or (size and size - start)
-            if not length then error("no `length` given and this build can't report the domain size") end
-            if size and start + length > size then
-                error(string.format("range 0x%X+%d runs past the end of the domain (size %d)", start, length, size))
-            end
-            data, base = read_region_string(start, length), start
-        end)
-    end
-
+    local data, base, domain = region_or_snapshot(p)
     local r = bytesearch.search(data, base, opts)
     r.domain, r.truncated = domain, r.count > #r.matches
     return r
@@ -1021,6 +1052,7 @@ local HANDLERS = {
     list_snapshots       = cmd_list_snapshots,
     delete_snapshots     = cmd_delete_snapshots,
     search_bytes         = cmd_search_bytes,
+    dump_memory          = cmd_dump_memory,
     list_memory_domains  = cmd_list_memory_domains,
     press_buttons        = cmd_press_buttons,
     press_buttons_multi  = cmd_press_buttons_multi,

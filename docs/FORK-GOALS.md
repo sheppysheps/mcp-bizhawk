@@ -47,7 +47,7 @@ Corrections to upstream's docs, learned the hard way:
 | 5 | **Live helper scripts** (overlays, trackers, hitbox drawers), only when a human is truly needed. | `eval_lua` can draw with `gui.*`, but only for one frame. | **Persistent per-frame sandboxed scripts:** register, list and remove scripts that run every frame, behind the same consent gate, with a per-frame budget, and switched off automatically after errors. |
 
 Some things stay out of the server on purpose:
-- **Exporting files:** scripts and tools return data, and the agent writes JSON or dumps with its own file tools. That keeps the sandbox free of file access.
+- **General file export:** scripts and tools return data, and the agent writes JSON with its own file tools, so the sandbox has no file access. The one exception is `bizhawk_dump_memory`, which writes raw bytes only into the user's `BIZHAWK_DUMP_DIR` for external tools, so large dumps never pass through the agent's context.
 - **Game-specific knowledge:** RAM maps, function names, text tables.
 - **Static disassembly:** Ghidra does that.
 
@@ -59,6 +59,7 @@ Each step is a branch (they all change the protocol), comes with tests at Layers
 |---|---|---|---|
 | 1 ✅ | **Memory snapshots and compare** (done; see RECIPES 10): `snapshot_memory` (named, per domain and range, stored in the bridge as compact strings) and `compare_snapshots` (changed, unchanged, increased, decreased, equal to, changed by N; 8/16/32-bit, signed or not; narrows existing candidates) | W1, and pointer hunting in general | Pure reads. Return counts plus a capped candidate list. Set a total memory cap for snapshots. |
 | 2 ✅ | **Byte-pattern and relative search** over any domain (done: `bizhawk_search_bytes`, RECIPES 11) | W2, W3 | Pure reads. Wildcards (`??`). Relative mode for unknown text encodings. |
+| 2½ ✅ | **Memory dumps to files** (done: `bizhawk_dump_memory`, fenced to `BIZHAWK_DUMP_DIR`) | External decoders and skills (e.g. tile and sprite extraction) | Writes files, so it's limited to a folder the user configures. |
 | 3 | **Execution coverage map** over N frames, with bank capture | W2, W4 | `on_bus_exec_any` is very slow per instruction, so cap the frames, report the slowdown, and return merged address ranges. |
 | 4 | **Breakpoint upgrades:** capture memory ranges, exit capture (return pairing), and a `set_register` tool | W4 | The register write is a normal write tool, like memory writes. |
 | 5 | **Persistent per-frame sandboxed scripts** | W5 | Same consent gate and sandbox. Security review. |

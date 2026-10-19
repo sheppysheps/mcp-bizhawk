@@ -290,6 +290,23 @@ On Shantae (GBC), relative search over the whole 4 MiB ROM takes about 0.7 s and
 
 ---
 
+## 12. Hand memory to an external tool
+
+> "Dump VRAM and OAM on the title screen so I can decode the tiles with a script."
+
+Reading kilobytes with `bizhawk_read_range` puts every byte into the conversation. `bizhawk_dump_memory` writes them straight to a file instead, inside the folder the user set with `BIZHAWK_DUMP_DIR`:
+
+```
+1. bizhawk_pause()                                              # freeze one frame
+2. bizhawk_dump_memory(file="mygame/title_vram", domain="VRAM", note="title screen")
+3. bizhawk_dump_memory(file="mygame/title_oam", domain="OAM")
+4. <run your own decoder on the two .bin files>
+```
+
+Each dump gets a `.json` sidecar with its domain, start, length, frame and SHA-256, so a script knows exactly what it's reading. To capture several regions at precisely the same moment without pausing, snapshot them first and dump the snapshots (`snapshot="name"`). A full-ROM dump's SHA-256 should match the hash other tools, such as Ghidra, report for the ROM file.
+
+---
+
 ## Tips for Claude prompts
 
 - **Always start with `bizhawk_get_info`** so Claude knows which system and which memory domains are live before reasoning about addresses.

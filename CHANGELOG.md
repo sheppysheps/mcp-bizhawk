@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bizhawk_dump_memory`:** write a memory region or stored snapshot
+  straight to a file (up to 16 MiB; the 4 MiB Shantae ROM takes ~90 ms), so
+  external decoders can read it without the bytes passing through the agent.
+  Fenced to `BIZHAWK_DUMP_DIR` from the MCP config: callers only choose a
+  relative name with a .bin/.raw/.dat extension, escapes and absolute paths
+  are refused, and existing files are kept unless `overwrite` is set. Each
+  dump gets a `<file>.json` sidecar (domain, range, frame, SHA-256, note).
+
 - **`bizhawk_search_bytes`:** find byte patterns with `??` wildcards
   (`CD 40 05`), exact text, or text in an unknown encoding with a relative
   search that reports the inferred mapping (e.g. `A = 0x8B`). Searches live
