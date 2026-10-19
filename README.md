@@ -246,6 +246,12 @@ BizHawk's `joypad.set` takes a `{ButtonName=true, ...}` table where button names
 
 If you're unsure, run a probe: `bizhawk_press_buttons {"A": true}` and watch the active core's input display in BizHawk.
 
+## Skills
+
+Reusable, core-agnostic workflows built on top of the tools live in [`skills/`](skills/). Each has a `SKILL.md` an agent can follow, plus standard-library-only scripts:
+
+- [**tile-graphics**](skills/tile-graphics/SKILL.md): tile sheets for most tile-based systems, and full Game Boy / Game Boy Color decoding (tile maps with CGB attributes, OAM sprites, palettes recovered from a screenshot), checked pixel-for-pixel against BizHawk's own screenshot.
+
 ## Troubleshooting
 
 | Symptom | Cause / Fix |
@@ -284,6 +290,12 @@ npm run inspector
 ```
 
 Build first if you've edited `src/` since your last `npm install` (`npm run build`, or keep `npm run dev` running). Override the listener with `BIZHAWK_HOST` / `BIZHAWK_PORT` (default `127.0.0.1:8766`). `tools/list` works even without BizHawk connected; *calling* a tool needs EmuHawk running with the socket flags and `lua/bridge.lua` loaded.
+
+## Acknowledgements
+
+- **[dmang-dev/mcp-bizhawk](https://github.com/dmang-dev/mcp-bizhawk)**, the MIT-licensed project this fork builds on (the bridge, transport and original tool set).
+- **[BizHawk](https://github.com/TASEmulators/BizHawk)** by the BizHawk team (TASEmulators), the emulator this server drives. Its MIT-licensed GB GPU Viewer (`GBGPUView.cs`) served as a reference when checking the tile-graphics skill; no code was copied.
+- **[Pan Docs](https://gbdev.io/pandocs/)** by the gbdev community (CC0), the Game Boy technical reference the tile-graphics skill follows.
 
 ## License
 

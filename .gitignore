@@ -26,3 +26,12 @@ shantae.gbc
 
 # Machine-specific MCP config (absolute paths).
 .mcp.json
+
+# Local-only reference material: not ours to redistribute (TCRF) or already
+# published elsewhere (Pan Docs, credited in README acknowledgements).
+docs/CGB_Bootstrap_ROM_tables/
+docs/gbdev-io-pandocs-single-html.md
+
+# Python bytecode caches
+__pycache__/
+*.pyc

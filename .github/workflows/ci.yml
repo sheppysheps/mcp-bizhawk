@@ -56,9 +56,18 @@ jobs:
       - name: Sandbox, consent gate and json.lua checks
         run: lua5.4 test/lua/run.lua
 
+  skills:
+    name: skill tests (python on ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: tile-graphics unit tests (standard library only)
+        run: python3 -m unittest discover -s skills/tile-graphics/tests -v
+
   ci-ok:
     name: ci-ok
-    needs: [build, lua]
+    needs: [build, lua, skills]
     runs-on: ubuntu-latest
     if: ${{ always() }}
     steps:
@@ -70,6 +79,10 @@ jobs:
           fi
           if [ "${{ needs.lua.result }}" != "success" ]; then
             echo "lua tests did not succeed: ${{ needs.lua.result }}"
+            exit 1
+          fi
+          if [ "${{ needs.skills.result }}" != "success" ]; then
+            echo "skill tests did not succeed: ${{ needs.skills.result }}"
             exit 1
           fi
           echo "all matrix builds and lua tests passed"
