@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Shared hub: several MCP sessions can drive one BizHawk.** By default each
+  session's server now relays to a background hub (`dist/index.js --hub`,
+  started automatically on first use) that owns BizHawk's port, so switching
+  between projects or reloading VS Code keeps the same BizHawk, snapshots and
+  breakpoints. The hub exits after 5 minutes with no sessions and no BizHawk,
+  is replaced automatically after a rebuild once BizHawk is closed, and only
+  accepts local connections that open with a proper handshake. New
+  `bizhawk_hub_status` tool; `BIZHAWK_HUB=0` keeps the old direct mode. See
+  the README's "Several sessions, one BizHawk".
+
 - **Unknown-value memory search:** `bizhawk_snapshot_memory`,
   `bizhawk_compare_snapshots`, `bizhawk_list_snapshots` and
   `bizhawk_delete_snapshots`. Snapshots are kept inside the bridge as compact
