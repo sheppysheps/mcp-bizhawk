@@ -70,6 +70,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Tool arguments are now validated against each tool's schema** (using the
+  MCP SDK's Ajv validator; no new dependency). Malformed arguments, such as a
+  frame written `{"Start": true}` without its `buttons` wrapper, used to reach
+  the bridge and silently do nothing; they now fail with a clear message.
+- **A second Claude session no longer gets a dead bizhawk server.** When the
+  port is taken (another session's mcp-bizhawk), the server stays up, every
+  tool explains the situation immediately, `bizhawk_launch` refuses (a
+  BizHawk started then would connect to the other session), and the listener
+  retries every 5 s, taking over when the port frees up.
+- **Calls fail fast when no BizHawk is connected** (after a 2 s grace period)
+  with setup advice, instead of waiting out the 10 s timeout.
+- The server now reports its real version (from `package.json`) instead of
+  `0.1.0`, and its startup message no longer points at a BizHawk menu that
+  doesn't exist.
 - **Input never reached single-controller cores (Game Boy / GBC).**
   `joypad.set(buttons, player)` prefixes names with `P<n> `, but those cores
   name buttons without one, so `press_buttons`, `press_buttons_multi` and
