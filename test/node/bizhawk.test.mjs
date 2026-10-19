@@ -17,13 +17,19 @@ function freePort() {
 }
 
 /**
- * Connect a fake bridge: collects framed lines the server sends.
+ * Connect a fake bridge: collects framed lines the server sends. Pass the
+ * server to also wait until it has registered the connection.
  * @returns `{ sock, next(), send(line) }` where next() resolves with the next payload (prefix stripped).
  * @requires A BizhawkServer listening on `port`.
  */
-async function fakeBridge(port) {
+async function fakeBridge(port, srv) {
   const sock = net.connect(port, "127.0.0.1");
   await new Promise((r) => sock.once("connect", r));
+  // The client side can see "connect" before the server has registered the
+  // socket; wait for the server too, or a call made right away would wait out
+  // its connect grace period instead of being queued (a CI race on macOS).
+  const deadline = Date.now() + 2000;
+  while (srv && !srv.isConnected() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
   sock.setEncoding("utf8");
   const lines = []; const waiters = []; let buf = "";
   sock.on("data", (d) => {
@@ -56,7 +62,7 @@ async function withServer(opts, fn) {
 }
 
 test("READY with nothing queued gets NONE", () => withServer({}, async (srv, port) => {
-  const b = await fakeBridge(port);
+  const b = await fakeBridge(port, srv);
   b.send("READY");
   assert.equal(await b.next(), "NONE");
   assert.equal(srv.isBridgeReady(), true);
@@ -64,7 +70,7 @@ test("READY with nothing queued gets NONE", () => withServer({}, async (srv, por
 }));
 
 test("a queued call is sent on READY and resolved by its RESULT", () => withServer({}, async (srv, port) => {
-  const b = await fakeBridge(port);
+  const b = await fakeBridge(port, srv);
   const pending = srv.call("ping", { x: 1 });
   b.send("READY");
   const cmd = JSON.parse(await b.next());
@@ -76,14 +82,14 @@ test("a queued call is sent on READY and resolved by its RESULT", () => withServ
 }));
 
 test("BizHawk's own length prefix on incoming lines is accepted", () => withServer({}, async (srv, port) => {
-  const b = await fakeBridge(port);
+  const b = await fakeBridge(port, srv);
   b.send("5 READY");
   assert.equal(await b.next(), "NONE");
   b.sock.destroy();
 }));
 
 test("an error RESULT rejects the call with the bridge's message", () => withServer({}, async (srv, port) => {
-  const b = await fakeBridge(port);
+  const b = await fakeBridge(port, srv);
   const pending = srv.call("read8", { address: 0 });
   b.send("READY");
   const cmd = JSON.parse(await b.next());
@@ -93,7 +99,7 @@ test("an error RESULT rejects the call with the bridge's message", () => withSer
 }));
 
 test("a call a connected bridge never answers times out", () => withServer({ timeoutMs: 150 }, async (srv, port) => {
-  const b = await fakeBridge(port);  // connected, but never sends READY
+  const b = await fakeBridge(port, srv);  // connected, but never sends READY
   await assert.rejects(srv.call("ping"), /timed out \(150ms\)/);
   b.sock.destroy();
 }));
@@ -125,7 +131,7 @@ test("a busy port is a waiting state, not a crash, and is taken over when freed"
 });
 
 test("disconnecting resets bridge readiness", () => withServer({}, async (srv, port) => {
-  const b = await fakeBridge(port);
+  const b = await fakeBridge(port, srv);
   b.send("READY");
   await b.next();
   assert.equal(srv.isBridgeReady(), true);
@@ -135,7 +141,7 @@ test("disconnecting resets bridge readiness", () => withServer({}, async (srv, p
 }));
 
 test("a second BizHawk client is refused", () => withServer({}, async (srv, port) => {
-  const first = await fakeBridge(port);
+  const first = await fakeBridge(port, srv);
   first.send("READY");
   await first.next();
   const second = net.connect(port, "127.0.0.1");
