@@ -35,3 +35,6 @@ docs/gbdev-io-pandocs-single-html.md
 # Python bytecode caches
 __pycache__/
 *.pyc
+
+# skill-creator eval workspaces (local test runs)
+skills/*-workspace/

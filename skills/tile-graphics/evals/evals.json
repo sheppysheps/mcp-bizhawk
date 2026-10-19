@@ -1,0 +1,82 @@
+{
+  "skill_name": "tile-graphics",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I paused Shantae (Game Boy Color) on the title screen and dumped VRAM (<workspace>/inputs/shantae_title/vram.bin, 16 KB), OAM (<workspace>/inputs/shantae_title/oam.bin) and the 12 bytes at $FF40 (<workspace>/inputs/shantae_title/io.bin), plus a screenshot (<workspace>/inputs/shantae_title/screenshot.png). Rip the on-screen sprites and both VRAM tile banks to PNGs, in the game's real colors where you can. Tell me what each file is.",
+      "expected_output": "PNG tile sheets for VRAM bank 0 and bank 1, a sprite sheet in real (inferred) colors, palettes recovered from the screenshot; notes which outputs are grayscale vs real color; notes LCDC sprites-off at frame end.",
+      "files": [
+        "<workspace>/inputs/shantae_title/vram.bin",
+        "<workspace>/inputs/shantae_title/oam.bin",
+        "<workspace>/inputs/shantae_title/io.bin",
+        "<workspace>/inputs/shantae_title/screenshot.png"
+      ],
+      "name": "rip-title-graphics",
+      "assertions": [
+        "a PNG contains >=95% of VRAM bank 0's 384 tiles, decoded correctly",
+        "a PNG contains >=95% of VRAM bank 1's 384 tiles, decoded correctly",
+        "at least one output uses >=5 of the screenshot's real colors (not just grayscale)",
+        "Answer says which outputs are grayscale and which are in real color",
+        "Answer flags that LCDC=0xE5 has sprites off although sprites are on screen",
+        "Text read from the graphics is accurate",
+        "Advice is feasible with BizHawk (doesn't tell the user to read CGB palette RAM via $FF68/$FF69 writes, which BizHawk ignores)"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Using these Shantae title-screen dumps (<workspace>/inputs/shantae_title/vram.bin, <workspace>/inputs/shantae_title/oam.bin, <workspace>/inputs/shantae_title/io.bin) and screenshot (<workspace>/inputs/shantae_title/screenshot.png), check whether decoding the video state actually reproduces the screenshot exactly. Give me the pixel match percentage, and if it isn't 100%, figure out why and fix it.",
+      "expected_output": "Initial match ~94.56% because LCDC=0xE5 has sprites disabled at frame end while the Press Start plate is sprites; with LCDC overridden to 0xE7 the match is 100.00%.",
+      "files": [
+        "<workspace>/inputs/shantae_title/vram.bin",
+        "<workspace>/inputs/shantae_title/oam.bin",
+        "<workspace>/inputs/shantae_title/io.bin",
+        "<workspace>/inputs/shantae_title/screenshot.png"
+      ],
+      "name": "verify-title-decode",
+      "assertions": [
+        "a rendered 160x144 screen in outputs is pixel-identical to the screenshot",
+        "Reports the as-dumped match (~94.56%)",
+        "Identifies LCDC bit 1 (sprites off at frame end) as the cause",
+        "Is honest that colors came from the screenshot, so 100% checks structure, not RGB",
+        "Advice is feasible with BizHawk (doesn't tell the user to read CGB palette RAM via $FF68/$FF69 writes, which BizHawk ignores)"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Get the Game Boy Color palettes from this capture and confirm your decode matches the screenshot: <workspace>/inputs/shantae_black/vram.bin, <workspace>/inputs/shantae_black/oam.bin, <workspace>/inputs/shantae_black/io.bin, <workspace>/inputs/shantae_black/screenshot.png. It's from Shantae, early after boot.",
+      "expected_output": "Notices the screenshot is a uniform black frame (a transition), so recovered palettes are meaningless (only black) and a 100% match proves nothing; recommends capturing a frame with visible content.",
+      "files": [
+        "<workspace>/inputs/shantae_black/vram.bin",
+        "<workspace>/inputs/shantae_black/oam.bin",
+        "<workspace>/inputs/shantae_black/io.bin",
+        "<workspace>/inputs/shantae_black/screenshot.png"
+      ],
+      "name": "black-frame-trap",
+      "assertions": [
+        "(fact) the screenshot is a single uniform color",
+        "Says the screenshot is entirely black",
+        "Says the 100% match proves nothing / can't confirm the decode",
+        "Doesn't present the all-black palettes as the game's real palettes",
+        "Recommends recapturing a frame with visible content (after the fade)",
+        "Advice is feasible with BizHawk (doesn't tell the user to read CGB palette RAM via $FF68/$FF69 writes, which BizHawk ignores)",
+        "Text read from the graphics is accurate"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "<workspace>/inputs/nes_chr/chr.bin is 8 KB of NES pattern-table (CHR) data I pulled from a game. Render all of it as a tile sheet PNG, 16 tiles wide, and tell me the image dimensions.",
+      "expected_output": "A 128x256 PNG of 512 tiles decoded with NES planar 2bpp (8 bytes plane 0, then 8 bytes plane 1, bit 7 leftmost).",
+      "files": [
+        "<workspace>/inputs/nes_chr/chr.bin"
+      ],
+      "name": "nes-chr-sheet",
+      "assertions": [
+        "sheet.png is 128x256 (16 tiles wide, 512 tiles)",
+        "every tile matches an independent NES planar decode, in order",
+        "sheet is not decoded with the Game Boy (interleaved) layout by mistake",
+        "Answer states 128x256"
+      ]
+    }
+  ],
+  "notes": "<workspace> is skills/tile-graphics-workspace/ (gitignored). The Shantae inputs are dumps of a commercial ROM, so they are not committed: recreate them with bizhawk_dump_memory (VRAM, OAM, System Bus $FF40 length 12) and bizhawk_screenshot at the frames described in research/06-tile-graphics-skill-eval.md. inputs/nes_chr/chr.bin is synthetic and generated as described there."
+}

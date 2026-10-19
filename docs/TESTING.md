@@ -82,6 +82,6 @@ These test whether **an agent can actually do the target workflows** in [FORK-GO
 ## Plan
 
 1. ~~`feat/tests`: set up the `node:test` runner, port the sandbox and gate script to Layer 2, and add a Lua job to CI.~~ Done.
-2. `feat/fixture-rom`: build the RGBDS fixture ROM, and turn the scratchpad smoke scripts into the Layer 3 runner.
+2. `feat/fixture-rom`: build the RGBDS fixture ROM, and turn the ad-hoc smoke scripts used during development (not in the repo) into a Layer 3 runner.
 3. Add the capability gaps from FORK-GOALS.md (unknown-value search, per-frame scripts), each with tests.
 4. Write the Layer 4 eval tasks against the fixture ROM, then spot-check them on real games.

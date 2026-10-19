@@ -40,7 +40,7 @@ export function dumpDir(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.BIZHAWK_DUMP_DIR;
   if (!dir) {
     throw new Error("BIZHAWK_DUMP_DIR is not set. Add it to the bizhawk server's \"env\" in your MCP config, " +
-      "e.g. \"BIZHAWK_DUMP_DIR\": \"E:/Claude Work/dumps\", then reload the MCP server.");
+      "e.g. \"BIZHAWK_DUMP_DIR\": \"C:/path/to/dumps\", then reload the MCP server.");
   }
   if (!path.isAbsolute(dir)) throw new Error(`BIZHAWK_DUMP_DIR must be an absolute path (got ${dir})`);
   return path.resolve(dir);
