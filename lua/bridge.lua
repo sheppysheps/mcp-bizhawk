@@ -28,6 +28,8 @@
 -- Verify with `mcp-bizhawk` startup log: should print "BizHawk client connected".
 
 local json = require("json")
+-- Opt-in sandbox for caller-supplied Lua; all of its safety rules live there.
+local sandbox = require("sandbox")
 
 -- Pending result from last frame's command. Sent back at the start of the
 -- next frame's round-trip (instead of a bare "READY").
@@ -96,6 +98,8 @@ local CAPS = {
     on_bus_exec      = event and has(event, "on_bus_exec"),
     unregisterbyid   = event and has(event, "unregisterbyid"),
     getregisters     = emu and has(emu, "getregisters"),
+    -- arbitrary Lua needs forms to show the human its confirmation dialog
+    eval_dialog      = forms and has(forms, "newform") and has(forms, "checkbox") and has(forms, "ischecked"),
 }
 
 -- ── Command handlers ────────────────────────────────────────────────────────
@@ -706,6 +710,82 @@ local function cmd_get_breakpoint_hits(p)
     return summary
 end
 
+-- ── Arbitrary Lua (opt-in, sandboxed) ───────────────────────────────────────
+--
+-- The gate starts closed and no dialog is shown. The first eval call while it's
+-- closed opens the confirmation dialog in BizHawk and fails; only a person
+-- ticking the checkbox opens the gate. See lua/sandbox.lua for every limit.
+
+--- Play the OS "Asterisk" sound so the human notices the confirmation dialog.
+---
+--- WHY THIS NEEDS .NET ACCESS: BizHawk's Lua API has no sound function, so this
+--- reaches System.Media.SystemSounds through NLua's `luanet`. It runs on the
+--- bridge (host) side only, imports exactly one type, plays one fixed sound, and
+--- takes no input. `luanet` itself is never handed to the sandbox.
+--- @return nothing. Silently does nothing if luanet or the type is missing
+---         (e.g. on Linux/Mono, where the call may also be silent).
+--- @requires NLua `luanet` (load_assembly, import_type); Windows for audible output.
+local function play_attention_sound()
+    if type(luanet) ~= "table" then return end
+    pcall(function()
+        luanet.load_assembly("System")
+        local SystemSounds = luanet.import_type("System.Media.SystemSounds")
+        if SystemSounds then SystemSounds.Asterisk:Play() end
+    end)
+end
+
+local eval_gate = sandbox.new_gate({
+    forms  = forms,
+    has    = has,
+    now    = os.time,
+    notify = play_attention_sound,
+})
+
+-- Libraries handed to the sandbox. sandbox.lua copies only whitelisted names.
+local SANDBOX_HOST = {
+    memory = memory, mainmemory = mainmemory, emu = emu, gui = gui,
+    client = client, gameinfo = gameinfo, bit = bit, has = has,
+}
+
+local EVAL_DEFAULT_INSTRUCTIONS = 1000000
+local EVAL_MAX_INSTRUCTIONS     = 50000000
+local EVAL_DEFAULT_MEMORY_KB    = 16384
+local EVAL_MAX_MEMORY_KB        = 65536
+
+--- Clamp an optional numeric option to [1, max], falling back to `default`.
+--- @return an integer within range.
+--- @requires Nothing.
+local function clamp_opt(v, default, max)
+    v = tonumber(v) or default
+    if v < 1 then v = 1 end
+    if v > max then v = max end
+    return math.floor(v)
+end
+
+--- Run caller-supplied Lua in the sandbox, if the human has enabled it.
+--- @return `{ values, count, output, instructions }` from sandbox.run. Errors
+---         when the gate is closed (opening the dialog), when `code` is missing,
+---         or with the script's own compile/runtime/budget error.
+--- @requires lua/sandbox.lua; BizHawk `forms` for the confirmation dialog.
+local function cmd_eval_lua(p)
+    if not eval_gate.enabled() then
+        local state, wait = eval_gate.request()
+        if state == "opened" or state == "open" then
+            error("arbitrary Lua is disabled. A confirmation dialog is open in BizHawk; only the person " ..
+                  "at the computer can enable it (tick the checkbox, then click Accept). Retry afterwards.")
+        elseif state == "cooldown" then
+            error(string.format("arbitrary Lua is disabled: the confirmation dialog was closed or " ..
+                  "declined, and it won't reopen for another %d s. Don't ask the user to enable it.", wait))
+        end
+        error("arbitrary Lua is unavailable: this BizHawk build has no forms API for the confirmation dialog")
+    end
+    if type(p.code) ~= "string" or p.code == "" then error("code required (a string of Lua source)") end
+    return sandbox.run(p.code, {
+        max_instructions = clamp_opt(p.max_instructions, EVAL_DEFAULT_INSTRUCTIONS, EVAL_MAX_INSTRUCTIONS),
+        max_memory_kb    = clamp_opt(p.max_memory_kb,    EVAL_DEFAULT_MEMORY_KB,    EVAL_MAX_MEMORY_KB),
+    }, SANDBOX_HOST)
+end
+
 local function cmd_get_registers(p)
     if not CAPS.getregisters then error("emu.getregisters not available on this BizHawk build") end
     return emu.getregisters()
@@ -742,6 +822,7 @@ local HANDLERS = {
     list_breakpoints     = cmd_list_breakpoints,
     get_breakpoint_hits  = cmd_get_breakpoint_hits,
     get_registers        = cmd_get_registers,
+    eval_lua             = cmd_eval_lua,
 }
 
 local function dispatch(cmd)

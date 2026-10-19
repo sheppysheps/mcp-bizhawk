@@ -19,6 +19,10 @@ One bridge, **many systems**: NES, SNES, Game Boy / GBC / GBA, Sega Master Syste
 
 <p align="center"><em>Claude (the agent) drives Samus through the opening of Ceres Station — all input batched through <code>bizhawk_play_input_sequence</code>, all motion verified by reading WRAM addresses found via live RAM-hunt. Recording is 2× speed; the actual playback runs at native 60fps emulation. See <a href="docs/RECIPES.md"><code>docs/RECIPES.md</code></a> and <a href="docs/SUPER-METROID-ADDRESSES.md"><code>docs/SUPER-METROID-ADDRESSES.md</code></a> for the workflow.</em></p>
 
+## About this fork
+
+This fork adds what coding agents need to research game internals autonomously: launch and close, logging breakpoints, and opt-in sandboxed Lua. See [docs/FORK-GOALS.md](docs/FORK-GOALS.md) for the goals and the "capabilities, not features" principle, and [docs/TESTING.md](docs/TESTING.md) for the testing strategy.
+
 ## How it works
 
 ```
@@ -170,6 +174,7 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 | `bizhawk_list_breakpoints` / `bizhawk_remove_breakpoint` | List breakpoints with hit counts / remove one or all |
 | `bizhawk_get_breakpoint_hits` | Fetch a breakpoint's logged hits (optionally clearing the buffer) |
 | `bizhawk_get_registers` | Read the CPU registers (names are core-specific) |
+| `bizhawk_eval_lua` | **Off by default.** Run a short Lua script in a read-only sandbox (pointer walks, struct decoding, `gui.*` drawing). The first call opens a confirmation dialog in BizHawk; only the person at the computer can enable it (tick the box, then click Accept). See [lua/sandbox.lua](lua/sandbox.lua) for exactly what scripts can reach |
 
 Breakpoints are *logging* breakpoints: BizHawk's Lua can't halt the CPU mid-instruction, so each hit is recorded (and `pause_on_hit` pauses at the end of that frame). Breakpoint addresses are on the CPU's system bus by default (pass `scope` for another), unlike the memory tools' per-domain offsets. Whether read and exec hooks fire, and whether the written value is reported, depends on the core: on Gambatte (GB/GBC) all three kinds fire, the value of a write is always reported as 0, and the registers include the mapped `ROMX BANK`/`WRAM BANK`.
 
