@@ -3,6 +3,9 @@
 Run from the repo root:  python -m unittest discover -s skills/tile-graphics/tests -v
 """
 
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -11,9 +14,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
+import tilegfx  # noqa: E402
 from formats import get_format, flip  # noqa: E402
-from gameboy import GBVideo, infer_palettes, parse_io, dmg_palette, DMG_SHADES  # noqa: E402
-from png import read_png, write_png  # noqa: E402
+from gameboy import (GBVideo, infer_palettes, parse_io, dmg_palette, DMG_SHADES, hex_color,  # noqa: E402
+                     parse_color, screenshot_warnings, tile_usage)
+from png import read_png, scale_pixels, write_png  # noqa: E402
 
 # Pan Docs "VRAM Tile Data" example tile; its first row decodes to 0 2 3 3 3 3 2 0.
 PANDOCS_TILE = bytes([0x3C, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x7E, 0x5E, 0x7E, 0x0A, 0x7C, 0x56, 0x38, 0x7C])
@@ -70,6 +75,12 @@ class Png(unittest.TestCase):
             path = os.path.join(d, "t.png")
             write_png(path, 5, 3, pixels)
             self.assertEqual(read_png(path), (5, 3, pixels))
+
+    def test_scale_is_nearest_neighbour(self):
+        w, h, px = scale_pixels(2, 1, [(1, 1, 1, 255), (2, 2, 2, 255)], 3)
+        self.assertEqual((w, h), (6, 3))
+        self.assertEqual([p[0] for p in px[:6]], [1, 1, 1, 2, 2, 2])
+        self.assertEqual(px[6:12], px[:6])
 
 
 class GameBoy(unittest.TestCase):
@@ -129,10 +140,35 @@ class GameBoy(unittest.TestCase):
         self.assertEqual(screen[8][:3], bg[0][2])
         # Infer palettes back from the composed screen: should recover what was used.
         result = infer_palettes(v, (160, 144, screen))
-        self.assertEqual(result["bg"][0][2], list(bg[0][2]))
-        self.assertEqual(result["bg"][1][2], list(bg[1][2]))
-        self.assertEqual(result["obj"][3][3], list(obj[3][3]))
-        self.assertEqual(result["stats"]["bg"]["conflicts"], 0)
+        self.assertEqual(result["bg"][0][2], hex_color(bg[0][2]))
+        self.assertEqual(result["bg"][1][2], hex_color(bg[1][2]))
+        self.assertEqual(result["obj"][3][3], hex_color(obj[3][3]))
+        self.assertEqual(result["stats"]["bg"]["conflicting_pixels"], 0)
+        self.assertEqual(result["warnings"], [], "a varied screen raises no warning")
+        # The hex palettes read back as the same RGB.
+        again, _, _ = v.palettes(result)
+        self.assertEqual(again[1][2], bg[1][2])
+
+    def test_tile_usage_and_colors(self):
+        vram = self.make_vram()
+        vram[0x1800] = 1
+        vram[0x2000 + 0x1800] = 0x08 | 5                 # map cell (0,0): tile 1, bank 1, palette 5
+        oam = bytearray(160)
+        oam[0:4] = bytes([16, 8, 3, 0x02])               # object uses tile 3 with OBJ palette 2
+        v = GBVideo(vram, oam, parse_io(io_bytes(lcdc=0x93)))
+        use = tile_usage(v)
+        self.assertEqual(use[(1, 1)], ("bg", 5))
+        self.assertEqual(use[(0, 3)], ("obj", 2))
+        self.assertEqual(parse_color("#0a0B0c"), (10, 11, 12))
+        self.assertEqual(parse_color([1, 2, 3]), (1, 2, 3))
+        with self.assertRaises(ValueError):
+            parse_color("#123")
+
+    def test_plain_screenshot_warnings(self):
+        self.assertEqual(len(screenshot_warnings([(0, 0, 0, 255)] * 10)), 1)
+        self.assertIn("only 2 colors", screenshot_warnings([(0, 0, 0, 255), (9, 9, 9, 255)])[0])
+        self.assertEqual(screenshot_warnings([(i, 0, 0, 255) for i in range(3)]), [])
+
 
     def test_ten_objects_per_line(self):
         vram = self.make_vram()
@@ -158,6 +194,79 @@ class GameBoy(unittest.TestCase):
     def test_bad_vram_size(self):
         with self.assertRaises(ValueError):
             GBVideo(b"\0" * 100)
+
+
+class Cli(unittest.TestCase):
+    """End-to-end runs of tilegfx.py on small synthetic dumps."""
+
+    def dumps(self, d, shot_pixels):
+        """Write a CGB VRAM/OAM/IO dump set and a screenshot. Returns the common args."""
+        vram = bytearray(0x4000)
+        for t in range(4):
+            vram[t * 16:(t + 1) * 16] = solid_tile(t)
+        for cell in range(32 * 32):
+            vram[0x1800 + cell] = (cell % 32) % 4            # columns cycle through colors 0..3
+        paths = {n: os.path.join(d, n) for n in ("vram.bin", "oam.bin", "io.bin", "shot.png")}
+        for name, data in (("vram.bin", vram), ("oam.bin", bytes(160)), ("io.bin", io_bytes(lcdc=0x91))):
+            with open(paths[name], "wb") as f:
+                f.write(data)
+        write_png(paths["shot.png"], 160, 144, shot_pixels)
+        return ["--vram", paths["vram.bin"], "--oam", paths["oam.bin"], "--io", paths["io.bin"]], paths
+
+    def run_cli(self, argv):
+        """Run main() with stdout captured. Returns: (exit code, printed text)."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = tilegfx.main(argv)
+        return code, out.getvalue()
+
+    def test_black_frame_is_inconclusive(self):
+        with tempfile.TemporaryDirectory() as d:
+            common, paths = self.dumps(d, [(0, 0, 0, 255)] * (160 * 144))
+            pal = os.path.join(d, "pal.json")
+            self.run_cli(["gb-infer-palettes", *common, "--screenshot", paths["shot.png"], "--out", pal])
+            report = os.path.join(d, "verify.json")
+            code, text = self.run_cli(["gb-verify", *common, "--screenshot", paths["shot.png"], "--palettes", pal,
+                                       "--report", report])
+            self.assertEqual(code, tilegfx.EXIT_INCONCLUSIVE, text)
+            with open(report, encoding="utf-8") as f:
+                verdict = json.load(f)
+            self.assertEqual(verdict["match_percent"], 100.0)
+            self.assertEqual(verdict["negative_control_match_percent"], 100.0)
+            self.assertEqual(verdict["verdict"], "inconclusive")
+
+    def test_real_frame_matches_and_writes_zoomed_copy(self):
+        with tempfile.TemporaryDirectory() as d:
+            common, paths = self.dumps(d, [(0, 0, 0, 255)] * (160 * 144))
+            screen = os.path.join(d, "screen.png")
+            self.run_cli(["gb-screen", *common, "--out", screen])   # grayscale render = our "screenshot"
+            w, h, px = read_png(screen)
+            self.assertEqual((w, h), (160, 144))
+            self.assertEqual(read_png(os.path.join(d, "screen_4x.png"))[:2], (640, 576))
+            code, text = self.run_cli(["gb-verify", *common, "--screenshot", screen])
+            self.assertEqual(code, tilegfx.EXIT_OK, text)
+            self.assertIn("negative control", text)
+
+    def test_tiles_colors_and_compact_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            common, _ = self.dumps(d, [(0, 0, 0, 255)] * (160 * 144))
+            out = os.path.join(d, "sheet.png")
+            self.run_cli(["tiles", common[1], "--format", "gb2bpp", "--count", "4", "--columns", "4",
+                          "--colors", "#FF0000,#00FF00,#0000FF,#000000", "--out", out, "--scale", "1"])
+            w, h, px = read_png(out)
+            self.assertEqual((w, h, px[8][:3], px[16][:3]), (32, 8, (0, 255, 0), (0, 0, 255)))
+            self.assertFalse(os.path.exists(os.path.join(d, "sheet_1x.png")), "--scale 1 writes no copy")
+            grid = os.path.join(d, "map.json")
+            self.run_cli(["gb-map", *common, "--out", os.path.join(d, "map.png"), "--json", grid])
+            with open(grid, encoding="utf-8") as f:
+                text = f.read()
+            self.assertLess(len(text), 12000, "map JSON stays compact")
+            self.assertEqual(len(json.loads(text)["tile_numbers"]), 32)
+            code, text = self.run_cli(["gb-tiles", *common, "--out", os.path.join(d, "vram")])
+            self.assertTrue(os.path.exists(os.path.join(d, "vram_bank1_4x.png")), text)
+            strip = os.path.join(d, "strip.png")
+            self.run_cli(["montage", out, out, "--gap", "2", "--scale", "2", "--out", strip])
+            self.assertEqual(read_png(strip)[:2], ((32 + 2 + 32) * 2, 8 * 2))
 
 
 if __name__ == "__main__":

@@ -1,13 +1,34 @@
 ---
 name: tile-graphics
-description: Extract tile graphics, tile maps and sprites from a running game as PNG + JSON, using mcp-bizhawk memory dumps. Raw tile sheets for any tile-based system (Game Boy, NES, SNES, GBA, Genesis layouts); full Game Boy / Game Boy Color decoding (tile maps with CGB attributes, OAM sprites, palettes recovered from a screenshot) with a pixel-exact self-check against BizHawk's screenshot. Use when asked to rip, view, catalog or verify a game's tiles, sprites, backgrounds or palettes.
+description: Extract tile graphics, tile maps and sprites from a running game as PNG + JSON, using mcp-bizhawk memory dumps. Raw tile sheets for any tile-based system (Game Boy, NES, SNES, GBA, Genesis layouts), optionally colorized; full Game Boy / Game Boy Color decoding (tile banks colored by use, tile maps with CGB attributes, OAM sprites, palettes recovered from a screenshot) with a pixel-exact self-check and negative control against BizHawk's screenshot. Use when asked to rip, view, catalog or verify a game's tiles, sprites, backgrounds or palettes, or to render a binary dump as tiles.
 ---
 
 # tile-graphics
 
-Turn emulator memory into images an agent or a human can inspect: tile sheets, whole tile maps, sprite sheets, the composed screen, and palettes, each with JSON describing exactly what was decoded. Everything runs on **Python 3.9+ standard library only** (no pip installs), so every line is auditable.
+Turn emulator memory into images a person or an agent can inspect: tile sheets, whole tile maps, sprite sheets, the composed screen, and palettes, each with compact JSON describing what was decoded. Everything runs on **Python 3.9+ standard library only** (no pip installs), so every line is auditable.
 
-The skill only reads dump files. It never talks to the emulator itself: you capture state with mcp-bizhawk tools, then run `scripts/tilegfx.py` on the files.
+The skill only reads dump files. It never talks to the emulator: you capture state with mcp-bizhawk tools, then run `scripts/tilegfx.py` on the files.
+
+## How to report (read this first)
+
+The person reading your results is usually researching the game, and you may be one agent in a larger pipeline. They need to **understand and check** your work, not just receive files. A correct answer that can't be followed is worth less than a clear one, so the report matters as much as the decoding.
+
+Write the report (the reply, or `00-report.md` when you save to a folder, so it lists first) in this order:
+
+1. **Answer.** The first sentence answers the question: the dimensions, the match percentage, what the files are, or that the input can't support an answer.
+2. **What I did.** Short numbered steps in plain words, each with *why*: "Recovered palettes from the screenshot, because BizHawk's Lua can't read CGB palette memory."
+3. **Commands.** The exact `tilegfx.py` commands you ran, ready to copy and paste, so the work can be reproduced or rerun on another frame. If you wrote any extra code, save it next to the outputs and say what it does.
+4. **Files.** A table: file, what it shows, and whether it's in **real colors** or **grayscale by color index**.
+5. **Checks and caveats.** Verification numbers (match %, negative control, conflicting pixels), every `WARNING` the tools printed, and what stays unknown.
+6. **If something looks wrong,** say what you suspect, the evidence (numbers, byte patterns, an image showing it) and the command that shows it. Then give the next steps to try. **Don't end by asking a question**: in a pipeline nobody is there to answer it.
+
+Output folder layout:
+
+- `00-report.md`, then images: every image command writes the exact 1x PNG plus a zoomed `<name>_4x.png` for reading.
+- **Side by side** for every comparison (screenshot | rebuilt | diff, before | after): `tilegfx.py montage`.
+- `data/` for JSON. Quote the few numbers that matter in the report; **never paste whole JSON** (maps, sprite lists, palettes) into the report or the conversation, because it buries the answer and wastes context.
+
+**Reading text inside graphics** (titles, logos, badges): read it from the zoomed copy, not the 1x image, and say when a letter is uncertain. At 1x, "GBA" and "CGB" look alike.
 
 ## Prerequisites
 
@@ -28,15 +49,18 @@ bizhawk_screenshot(path="<BIZHAWK_DUMP_DIR>/<game>/<tag>_shot.png")
 
 Use `bizhawk_get_info` / `bizhawk_list_memory_domains` first on other systems: domain names differ (e.g. `VRAM`, `PPU Bus`, `CHR`, `OAM`).
 
+Check the screenshot before decoding: a solid black or white frame (a fade) can't verify anything. Advance a few frames and capture again.
+
 ## 2. Decode (scripts/tilegfx.py)
 
-Run from `skills/tile-graphics/scripts/` (or give its full path). `G=<BIZHAWK_DUMP_DIR>/<game>`.
+Run from `skills/tile-graphics/scripts/` (or give its full path). `G=<BIZHAWK_DUMP_DIR>/<game>`. Each command prints a short summary and the files it wrote.
 
 **Any system: raw tile sheet**
 
 ```
 python tilegfx.py tiles $G/<tag>_vram.bin --format gb2bpp --count 384 --out $G/tiles.png
 python tilegfx.py tiles $G/rom.bin --format nes2bpp --offset 0x8010 --count 512 --out $G/chr.png
+python tilegfx.py tiles $G/chr.bin --format nes2bpp --colors "#000000,#B53120,#EA9E22,#FFFFFF" --out $G/chr_color.png
 ```
 
 | `--format` | Layout | Systems |
@@ -47,7 +71,7 @@ python tilegfx.py tiles $G/rom.bin --format nes2bpp --offset 0x8010 --count 512 
 | `gba4bpp` / `gba8bpp` | linear, low nibble = left pixel | Game Boy Advance, DS |
 | `genesis4bpp` | packed, high nibble = left pixel | Genesis / Mega Drive, Master System |
 
-Raw sheets are grayscale by color index; ROM graphics may be compressed, in which case dump the decompressed copy from VRAM instead.
+Raw sheets are grayscale by color index (0 = white) unless you pass `--colors` (one `#RRGGBB` per index) or `--palettes <json> --palette bg:N`. ROM graphics may be compressed: if a sheet looks like noise, dump the decompressed copy from video memory instead. Before calling data "not graphics", show the evidence: blank-tile count, byte entropy, repeating patterns, and the zoomed sheet.
 
 **Game Boy / Game Boy Color: full decoding**
 
@@ -55,26 +79,39 @@ Common inputs: `IN="--vram $G/<tag>_vram.bin --oam $G/<tag>_oam.bin --io $G/<tag
 
 ```
 # CGB only: recover palettes from the screenshot (DMG palettes come from BGP/OBP0/OBP1)
-python tilegfx.py gb-infer-palettes $IN --screenshot $G/<tag>_shot.png --out $G/<tag>_pal.json
+python tilegfx.py gb-infer-palettes $IN --screenshot $G/<tag>_shot.png --out $G/data/pal.json
 
-# Self-check: rebuild the screen and compare with the screenshot pixel by pixel
-python tilegfx.py gb-verify $IN --screenshot $G/<tag>_shot.png --palettes $G/<tag>_pal.json --diff $G/<tag>_diff.png
+# Self-check: rebuild the screen, compare with the screenshot, run a negative control
+python tilegfx.py gb-verify $IN --screenshot $G/<tag>_shot.png --palettes $G/data/pal.json \
+    --diff $G/diff.png --report $G/data/verify.json
 
 # Outputs
-python tilegfx.py gb-map     $IN --palettes $G/<tag>_pal.json --out $G/<tag>_map.png --json $G/<tag>_map.json
-python tilegfx.py gb-sprites $IN --palettes $G/<tag>_pal.json --out $G/<tag>_sprites.png --json $G/<tag>_sprites.json
-python tilegfx.py gb-screen  $IN --palettes $G/<tag>_pal.json --out $G/<tag>_screen.png
+python tilegfx.py gb-tiles   $IN --palettes $G/data/pal.json --out $G/vram --json $G/data/vram.json
+python tilegfx.py gb-map     $IN --palettes $G/data/pal.json --out $G/map.png --json $G/data/map.json
+python tilegfx.py gb-sprites $IN --palettes $G/data/pal.json --out $G/sprites.png --json $G/data/sprites.json
+python tilegfx.py gb-screen  $IN --palettes $G/data/pal.json --out $G/screen.png --scale 1
+python tilegfx.py montage $G/<tag>_shot.png $G/screen.png $G/diff.png --out $G/compare.png
 ```
 
-- `gb-map --map bg|win|9800|9c00`: the whole 256x256 map (more than the visible 160x144), plus per-cell JSON: tile index, CGB attribute byte, palette, BG-over-OBJ priority.
-- `gb-sprites`: all 40 OAM objects in a 10-column sheet (8x8 or 8x16 per LCDC), plus JSON with screen position, tile, palette, bank, flips, priority and visibility. Grouping objects into a character ("metasprite") is game-specific: use the positions in the JSON.
+- `gb-tiles`: VRAM bank 0 (and bank 1 on CGB), 16 tiles wide; each tile drawn in the palette a tile map or sprite uses it with, unused tiles gray.
+- `gb-map --map bg|win|9800|9c00`: the whole 256x256 map (more than the visible 160x144), plus JSON grids: `tile_numbers[row][col]` and, on CGB, `cgb_attributes` (palette, bank, flips, priority bits explained in the file).
+- `gb-sprites`: all 40 OAM objects in a 10-column sheet, plus JSON for the on-screen ones (position, tile, palette, bank, flips, priority). Grouping objects into a character ("metasprite") is game-specific: use the positions.
 
 ## 3. Read the results
 
-- **`gb-infer-palettes` conflicts** count screenshot pixels that disagreed with the majority color for their (palette, color index). **0 conflicts** means the decoding is consistent with the picture. Colors are recovered only for palette entries actually visible on screen; capture several scenes to fill more.
-- **`gb-verify` match %**: 100% means the rebuilt screen is pixel-identical to BizHawk's. The `--diff` image shows mismatches in magenta.
-- **Below 100%? Suspect mid-frame changes first.** Registers are dumped at frame end, but games change them while the screen draws (status bars, split scrolling, sprites switched on for part of the frame). Look at where the magenta is, then override with `--lcdc`, `--scx`, `--scy`, `--wx`, `--wy`. Example from Shantae's title screen: LCDC read `0xE5` (sprites off) at frame end, but the "Press Start" plate is made of sprites; `--lcdc 0xE7` gave a 100% match.
+- **`gb-verify` verdict** (also its exit code): `match` (0), `mismatch` (1), or `inconclusive` (2) when the screenshot is too plain or the **negative control** (the same render with every tile blanked) matches too. A match only counts when the control is far lower; on the Shantae title screen it was 100% vs 19%.
+- **Colors from the screenshot check structure, not color.** When palettes were inferred from the same screenshot, 100% proves the tiles, maps, sprites and priorities are right; the colors match by construction. Say so in the report.
+- **`gb-infer-palettes` conflicting pixels**: screenshot pixels that disagreed with the majority color for their (palette, color index). 0 means the decode is consistent with the picture. Colors are recovered only for palette entries visible on screen; capture other scenes to fill more.
+- **Below 100%? Suspect registers that changed mid-frame.** The IO dump is read at the end of the frame, but games change registers while the screen draws (status bars, split scrolling) or during vblank. Look at where the magenta is, then override with `--lcdc`, `--scx`, `--scy`, `--wx`, `--wy`, and **use the same overrides for every command, including `gb-infer-palettes`**. Example, Shantae's title screen: LCDC read `0xE5` (sprites off), probably because the game turns sprites off at the start of vblank while it updates them; the "Press Start" plate is sprites, and `--lcdc 0xE7` gave a 100% match. The tools warn when the palettes were inferred with a different LCDC.
 - Recovered colors are in **the screenshot's color space** (BizHawk's GBC color correction, if enabled), which is what the game looks like, not raw RGB555 hardware values.
+
+### Getting real CGB palettes
+
+BizHawk's Lua can't read CGB palette memory: the palette data ports `$FF69`/`$FF6B` can't be driven from Lua (writes to I/O through the System Bus are ignored), so don't advise reading palettes through `$FF68`/`$FF69`. Routes that work:
+
+1. **Infer from a screenshot** (`gb-infer-palettes`): fast, covers what's on screen.
+2. **Catch the game writing them** (not yet verified): a write breakpoint on `$FF69` (BG) or `$FF6B` (OBJ) with `bizhawk_add_breakpoint`, then read register A at each hit; on the Gambatte core write callbacks report the written value as 0. The address the game copies from would lead to the palette table in ROM/RAM. If you try this, report whether it worked.
+3. **By eye**: BizHawk's GB GPU Viewer window shows the palettes; useful for spot checks only.
 
 ## Extending to another system
 
