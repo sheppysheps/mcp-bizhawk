@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automated tests.** `npm test` runs Node unit tests for the launcher's
+  input checks, tool definitions and dispatch (including the eval off switch)
+  and the TCP protocol against a fake bridge. `npm run test:lua` runs the
+  sandbox escape, limit, consent-gate and json.lua checks on stock Lua 5.4;
+  `npm run test:bizhawk` runs them inside real BizHawk with extra NLua-only
+  checks. CI runs the Node tests on every OS/Node combination and the Lua
+  checks on Ubuntu. See `docs/TESTING.md`.
+
 - **`bizhawk_eval_lua` (opt-in):** run short Lua scripts inside BizHawk for
   logic the fixed tools can't do in one call. The server only offers it when
   `BIZHAWK_EVAL_LUA=1` is set in its config, and the bridge loads

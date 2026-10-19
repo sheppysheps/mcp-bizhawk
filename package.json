@@ -19,7 +19,10 @@
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "prepare": "npm run build",
-    "inspector": "npx @modelcontextprotocol/inspector node dist/index.js"
+    "inspector": "npx @modelcontextprotocol/inspector node dist/index.js",
+    "test": "npm run build && node --test test/node/*.test.mjs",
+    "test:lua": "lua5.4 test/lua/run.lua",
+    "test:bizhawk": "node test/lua/run-in-bizhawk.mjs"
   },
   "engines": {
     "node": ">=22"
