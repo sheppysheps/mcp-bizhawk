@@ -25,12 +25,9 @@ test("names resolve inside the folder, with .bin added when there's no extension
 test("escapes out of the folder are refused", () => {
   assert.throws(() => resolveDumpPath(dir, "../outside.bin"), /must stay inside the dump folder/);
   assert.throws(() => resolveDumpPath(dir, "a/../../outside.bin"), /must stay inside the dump folder/);
-  if (process.platform === "win32") {
-    assert.throws(() => resolveDumpPath(dir, "..\\..\\Windows\\x.bin"), /must stay inside the dump folder/);
-  } else {
-    // On Linux/macOS "\" isn't a separator: this is one oddly named file INSIDE the folder.
-    assert.equal(path.dirname(resolveDumpPath(dir, "..\\..\\Windows\\x.bin")), dir);
-  }
+  // Refused on every platform: on Windows it escapes; on Linux/macOS ("\" isn't a
+  // separator there) it's one file whose name starts with "..", refused anyway.
+  assert.throws(() => resolveDumpPath(dir, "..\\..\\Windows\\x.bin"), /must stay inside the dump folder/);
   assert.throws(() => resolveDumpPath(dir, path.join(dir, "abs.bin")), /not an absolute path/);
   assert.throws(() => resolveDumpPath(dir, "C:x.bin"), /not an absolute path/);
   assert.throws(() => resolveDumpPath(dir, "\\\\server\\share\\x.bin"), /not an absolute path/);
