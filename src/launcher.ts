@@ -139,7 +139,7 @@ export class BizhawkLauncher {
  *          relative, missing, or not named EmuHawk.exe / EmuHawkMono.sh.
  * @requires process.env.BIZHAWK_EXE; node:fs.
  */
-function resolveExe(): string {
+export function resolveExe(): string {
   const exe = process.env.BIZHAWK_EXE;
   if (!exe) {
     throw new Error(
@@ -161,7 +161,7 @@ function resolveExe(): string {
  *          file, or doesn't have a known ROM extension.
  * @requires node:fs. Relative paths resolve against the server's working directory.
  */
-function validateRom(romPath: string): string {
+export function validateRom(romPath: string): string {
   if (typeof romPath !== "string" || romPath.trim() === "") throw new Error("rom path required");
   const rom = path.resolve(romPath);
   const ext = path.extname(rom).toLowerCase();

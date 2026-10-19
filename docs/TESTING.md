@@ -1,6 +1,12 @@
 # Testing strategy
 
-The current state: CI type-checks and builds on 3 operating systems × 3 Node versions, but **there are no automated tests**. Everything so far was verified by hand or by one-off scripts. This plan adds tests in layers, from fast and cheap to slow and realistic, and says what each layer is for.
+Status: **Layers 0 to 2 are in place.** CI builds and runs the Node unit tests on 3 operating systems × 3 Node versions, and runs the Lua checks on Lua 5.4. Layers 3 and 4 are still planned. Tests are added in layers, from fast and cheap to slow and realistic:
+
+| Command | Layer | Runs in CI |
+|---|---|---|
+| `npm test` | 0 + 1: build, then `test/node/*.test.mjs` | Yes, all 9 combinations |
+| `npm run test:lua` | 2: `test/lua/run.lua` on stock Lua 5.4 | Yes, Ubuntu |
+| `npm run test:bizhawk` | 2 inside real BizHawk, plus NLua-only checks | No, local (needs `BIZHAWK_EXE`, `TEST_ROM`) |
 
 ```
 Layer 4  Capability evals    agent + savestate + ground truth      before releases
@@ -29,7 +35,7 @@ Use Node's built-in `node:test` runner. It needs no new dependencies, which keep
 - **Consent state machine:** stand-in `forms` lets the test click Accept, Cancel and the X. Accept starts grayed out, ticking the box alone isn't consent, unticking grays Accept again, tick plus Accept is consent, Disable withdraws it, the X is never consent, and every close starts the 2-minute cooldown.
 - **json.lua:** a round-trip for nil holes, nested tables, control bytes and non-finite numbers.
 
-All of this exists today as a 44-check script, verified passing inside BizHawk 2.11.1. Porting it is the first job.
+These live in `test/lua/sandbox_spec.lua`: 72 checks on stock Lua, plus 4 that only run inside BizHawk 2.11.1 (76 there).
 
 **Caveat:** stock Lua isn't NLua. Anything specific to BizHawk's runtime belongs in Layer 3: userdata functions, `luanet` being present, and real `forms` behavior.
 
@@ -75,7 +81,7 @@ These test whether **an agent can actually do the target workflows** in [FORK-GO
 
 ## Plan
 
-1. `feat/tests`: set up the `node:test` runner, port the sandbox and gate script to Layer 2, and add a Lua job to CI.
+1. ~~`feat/tests`: set up the `node:test` runner, port the sandbox and gate script to Layer 2, and add a Lua job to CI.~~ Done.
 2. `feat/fixture-rom`: build the RGBDS fixture ROM, and turn the scratchpad smoke scripts into the Layer 3 runner.
 3. Add the capability gaps from FORK-GOALS.md (unknown-value search, per-frame scripts), each with tests.
 4. Write the Layer 4 eval tasks against the fixture ROM, then spot-check them on real games.

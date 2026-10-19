@@ -46,7 +46,7 @@ const ADDRESS_PARAM_DESC = (widthBytes: number) =>
   `consecutive byte${widthBytes === 1 ? "" : "s"} starting here. Returns an error if address < 0 ` +
   `or address + ${widthBytes} exceeds the domain's size.`;
 
-const TOOLS: Tool[] = [
+export const TOOLS: Tool[] = [
   // ── Connectivity & introspection ────────────────────────────────────────
 
   {
@@ -712,7 +712,7 @@ function describeBreakpoint(b: BreakpointSummary): string {
     `${b.dropped ? `, ${b.dropped} dropped` : ""} (max ${b.max_hits})`;
 }
 
-interface EvalResult {
+export interface EvalResult {
   values: unknown[] | Record<string, unknown>;
   count: number;
   output: string;
@@ -726,7 +726,7 @@ interface EvalResult {
  *          as an object keyed by position, so both shapes are handled.
  * @requires Nothing.
  */
-function describeEval(r: EvalResult): string {
+export function describeEval(r: EvalResult): string {
   const lines: string[] = [];
   for (let i = 1; i <= r.count; i++) {
     const v = Array.isArray(r.values) ? r.values[i - 1] : r.values?.[String(i)];

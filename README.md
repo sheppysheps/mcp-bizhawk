@@ -238,13 +238,15 @@ npm install
 npm run dev      # tsc --watch — autobuilds on src/ changes
 ```
 
-End-to-end smoke test (launches BizHawk, loads ROM + bridge, runs ping/get_info/list_memory_domains/read_range):
+Tests (see [docs/TESTING.md](docs/TESTING.md) for the full strategy):
 
 ```bash
-node .scratch/test-all.cjs "I:\path\to\your\rom.smc"
+npm test               # build, then Node unit tests (launcher, tools, TCP protocol); no BizHawk needed
+npm run test:lua       # sandbox, consent gate and json.lua checks on stock Lua 5.4 (needs lua5.4)
+npm run test:bizhawk   # the same Lua checks inside real BizHawk (needs BIZHAWK_EXE and TEST_ROM)
 ```
 
-Set `DEBUG=1` to dump every RX/TX line.
+CI runs the first two on every push. Set `MCP_BIZHAWK_DEBUG=1` to log every line sent to and from the bridge.
 
 ## Debugging with the MCP Inspector
 

@@ -41,16 +41,35 @@ jobs:
           test -f dist/tools.js
           echo "build artifacts OK"
 
+      - name: Unit tests (Node)
+        run: node --test test/node/*.test.mjs
+
+  lua:
+    name: lua tests (5.4 on ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Lua 5.4 (BizHawk 2.11 embeds 5.4)
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+
+      - name: Sandbox, consent gate and json.lua checks
+        run: lua5.4 test/lua/run.lua
+
   ci-ok:
     name: ci-ok
-    needs: build
+    needs: [build, lua]
     runs-on: ubuntu-latest
     if: ${{ always() }}
     steps:
-      - name: Verify all matrix builds passed
+      - name: Verify all matrix builds and the Lua tests passed
         run: |
           if [ "${{ needs.build.result }}" != "success" ]; then
             echo "matrix build did not fully succeed: ${{ needs.build.result }}"
             exit 1
           fi
-          echo "all matrix builds passed"
+          if [ "${{ needs.lua.result }}" != "success" ]; then
+            echo "lua tests did not succeed: ${{ needs.lua.result }}"
+            exit 1
+          fi
+          echo "all matrix builds and lua tests passed"
