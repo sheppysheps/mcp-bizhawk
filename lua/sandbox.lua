@@ -240,8 +240,9 @@ function M.new_gate(deps)
         forms.setproperty(box_handle, "Enabled", false)
         forms.setproperty(accept_handle, "Enabled", false)
         forms.setproperty(cancel_handle, "Text", "Disable")
+        -- Two lines: the monospace label is too narrow for this on one line.
         forms.setproperty(status_handle, "Text",
-            "Status: ENABLED. Click Disable or close this window to turn it off.")
+            "Status: ENABLED.\nClick Disable or close this window to turn it off.")
     end
 
     local gate = {}
@@ -255,13 +256,13 @@ function M.new_gate(deps)
         if wait > 0 then return "cooldown", wait end
 
         -- onClose: the title-bar X (or any other close) is never consent.
-        form_handle = forms.newform(440, 250, "mcp-bizhawk: arbitrary Lua", function() close(false) end)
+        form_handle = forms.newform(440, 270, "mcp-bizhawk: arbitrary Lua", function() close(false) end)
         forms.label(form_handle, WARNING_TEXT, 12, 12, 410, 92, true)
         box_handle = forms.checkbox(form_handle, CHECKBOX_TEXT, 12, 110)
         pcall(forms.setproperty, box_handle, "Width", 410)  -- cosmetic; caption is wide
-        status_handle = forms.label(form_handle, "Status: disabled.", 12, 142, 410, 20, true)
-        accept_handle = forms.button(form_handle, "Accept", on_accept, 222, 172, 96, 28)
-        cancel_handle = forms.button(form_handle, "Cancel", function() close(true) end, 326, 172, 96, 28)
+        status_handle = forms.label(form_handle, "Status: disabled.", 12, 142, 410, 36, true)
+        accept_handle = forms.button(form_handle, "Accept", on_accept, 222, 190, 96, 28)
+        cancel_handle = forms.button(form_handle, "Cancel", function() close(true) end, 326, 190, 96, 28)
         forms.setproperty(accept_handle, "Enabled", false)
         forms.addclick(box_handle, sync_accept)
         pcall(deps.notify)
