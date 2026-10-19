@@ -20,9 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and BizHawk's GB GPU Viewer (MIT, used as a cross-check).
 
 - **tile-graphics round 2** (from the first evaluation's review): SKILL.md
-  now sets a report format (answer first, method with reasons, exact
-  commands, a file table, checks and caveats, no closing questions) and keeps
-  full JSON in `data/`. New `gb-tiles` (VRAM banks colored by the palette each
+  puts complete, verified data first (nothing trimmed; full JSON in
+  `data/`), then efficiency, then a report: brief by default (answer, files,
+  checks, commands), a full write-up with method when asked, and no closing
+  questions. New `gb-tiles` (VRAM banks colored by the palette each
   tile is drawn with), `montage` (side-by-side comparisons) and
   `tiles --colors/--palettes`. Every image command also writes a zoomed
   `_4x` copy. JSON is compact, with readable keys (the title-screen map went

@@ -9,26 +9,11 @@ Turn emulator memory into images a person or an agent can inspect: tile sheets, 
 
 The skill only reads dump files. It never talks to the emulator: you capture state with mcp-bizhawk tools, then run `scripts/tilegfx.py` on the files.
 
-## How to report (read this first)
+**Priorities, in order:**
 
-The person reading your results is usually researching the game, and you may be one agent in a larger pipeline. They need to **understand and check** your work, not just receive files. A correct answer that can't be followed is worth less than a clear one, so the report matters as much as the decoding.
-
-Write the report (the reply, or `00-report.md` when you save to a folder, so it lists first) in this order:
-
-1. **Answer.** The first sentence answers the question: the dimensions, the match percentage, what the files are, or that the input can't support an answer.
-2. **What I did.** Short numbered steps in plain words, each with *why*: "Recovered palettes from the screenshot, because BizHawk's Lua can't read CGB palette memory."
-3. **Commands.** The exact `tilegfx.py` commands you ran, ready to copy and paste, so the work can be reproduced or rerun on another frame. If you wrote any extra code, save it next to the outputs and say what it does.
-4. **Files.** A table: file, what it shows, and whether it's in **real colors** or **grayscale by color index**.
-5. **Checks and caveats.** Verification numbers (match %, negative control, conflicting pixels), every `WARNING` the tools printed, and what stays unknown.
-6. **If something looks wrong,** say what you suspect, the evidence (numbers, byte patterns, an image showing it) and the command that shows it. Then give the next steps to try. **Don't end by asking a question**: in a pipeline nobody is there to answer it.
-
-Output folder layout:
-
-- `00-report.md`, then images: every image command writes the exact 1x PNG plus a zoomed `<name>_4x.png` for reading.
-- **Side by side** for every comparison (screenshot | rebuilt | diff, before | after): `tilegfx.py montage`.
-- `data/` for JSON. Quote the few numbers that matter in the report; **never paste whole JSON** (maps, sprite lists, palettes) into the report or the conversation, because it buries the answer and wastes context.
-
-**Reading text inside graphics** (titles, logos, badges): read it from the zoomed copy, not the 1x image, and say when a letter is uncertain. At 1x, "GBA" and "CGB" look alike.
+1. **Complete, correct data.** Extract everything that was asked for, verify it against the screenshot, and keep the full results: the tools write every map cell, all 40 sprites and every recovered color to files. Never trim data to save space; keep it in files instead.
+2. **Efficiency.** Use the bundled commands instead of writing decoders from scratch. Read the one-line summaries the tools print, not the JSON files, unless you need a specific value.
+3. **A report someone can check** (section 4), written last. It costs little and comes after the data is right.
 
 ## Prerequisites
 
@@ -112,6 +97,23 @@ BizHawk's Lua can't read CGB palette memory: the palette data ports `$FF69`/`$FF
 1. **Infer from a screenshot** (`gb-infer-palettes`): fast, covers what's on screen.
 2. **Catch the game writing them** (not yet verified): a write breakpoint on `$FF69` (BG) or `$FF6B` (OBJ) with `bizhawk_add_breakpoint`, then read register A at each hit; on the Gambatte core write callbacks report the written value as 0. The address the game copies from would lead to the palette table in ROM/RAM. If you try this, report whether it worked.
 3. **By eye**: BizHawk's GB GPU Viewer window shows the palettes; useful for spot checks only.
+
+## 4. Report
+
+**Where files go:** images (1x for machine checks, plus the `_4x` copies every image command writes) at the top of the output folder, full JSON under `data/`, the report as `00-report.md` so it lists first. Make side-by-side images for every comparison (screenshot | rebuilt | diff, before | after) with `tilegfx.py montage`. Never paste whole JSON (maps, sprite lists, palettes) into the report or the conversation: it buries the answer and fills the context. Quote the few values that matter.
+
+**Read text inside graphics** (titles, logos, badges) from the zoomed copy, not the 1x image, and say when a letter is uncertain. At 1x, "GBA" and "CGB" look alike.
+
+**Brief report (the default, and always when you're one agent in a pipeline):**
+
+1. **Answer** in the first sentence: the dimensions, the match percentage, what the files are, or that the input can't support an answer.
+2. **Files:** each file, what it shows, and whether it's **real colors** or **grayscale by color index**.
+3. **Checks:** the verification numbers (match %, negative control, conflicting pixels) and every `WARNING` the tools printed.
+4. **Commands:** the exact `tilegfx.py` commands, so the work can be rerun on another frame.
+
+**Full write-up (when a person asks how or why, or the result is surprising):** add a numbered **method**, each step with its reason ("Recovered palettes from the screenshot, because BizHawk's Lua can't read CGB palette memory"), and save any extra code you wrote next to the outputs.
+
+**If something looks wrong,** report what you suspect, the evidence (numbers, byte patterns, an image showing it) and the command that shows it, then the next steps to try. Don't end with a question: in a pipeline nobody is there to answer it.
 
 ## Extending to another system
 

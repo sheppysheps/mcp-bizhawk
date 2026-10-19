@@ -277,13 +277,14 @@ def cmd_gb_map(args):
 
 def describe_object(o):
     """Readable JSON record for one OAM object. Returns: dict. Requires: nothing."""
-    return {"oam_slot": o["index"], "screen_x": o["x"], "screen_y": o["y"], "tile_number": o["tile"],
-            "size": f"8x{o['height']}", "palette": o["palette"], "vram_bank": o["bank"],
-            "flip_x": o["x_flip"], "flip_y": o["y_flip"], "behind_background": o["behind_bg"]}
+    return {"oam_slot": o["index"], "on_screen": o["visible"], "screen_x": o["x"], "screen_y": o["y"],
+            "tile_number": o["tile"], "size": f"8x{o['height']}", "palette": o["palette"], "vram_bank": o["bank"],
+            "flip_x": o["x_flip"], "flip_y": o["y_flip"], "behind_background": o["behind_bg"],
+            "oam_bytes": f"{o['y'] + 16:02X} {o['x'] + 8:02X} {o['tile']:02X} {o['flags']:02X}"}
 
 
 def cmd_gb_sprites(args):
-    """Draw every OAM object on a sheet and list the on-screen ones.
+    """Draw every OAM object on a sheet and list all 40 with readable fields.
 
     Returns: None; writes args.out (PNG, 10 columns of 16x24 cells), a zoomed
     copy and --json. Requires: VRAM, OAM and (for 8x16 mode/palettes) IO dumps.
@@ -309,12 +310,13 @@ def cmd_gb_sprites(args):
     sprites_on = bool(video.io["LCDC"] & 0x02)
     if args.json:
         _write_json(args.json, {
-            "description": "OAM objects (hardware sprites). The sheet shows slot n at column n % 10, row n // 10. "
-                           "screen_x/screen_y are the top-left corner on the 160x144 screen.",
+            "description": "All 40 OAM objects (hardware sprites), including off-screen ones (a game may park "
+                           "sprites off screen until needed). The sheet shows slot n at column n % 10, row n // 10. "
+                           "screen_x/screen_y are the top-left corner on the 160x144 screen; oam_bytes are the raw "
+                           "Y, X, tile, flags bytes.",
             "mode": "CGB" if video.cgb else "DMG", "lcdc": f"0x{video.io['LCDC']:02X}",
-            "sprites_enabled_in_lcdc": sprites_on, "palette_source": source,
-            "on_screen": [describe_object(o) for o in shown],
-            "off_screen_slots": [o["index"] for o in objs if not o["visible"]]})
+            "sprites_enabled_in_lcdc": sprites_on, "palette_source": source, "on_screen_count": len(shown),
+            "objects": [describe_object(o) for o in objs]})
         files.append(args.json)
     print(f"{len(objs)} objects, {len(shown)} on screen, palettes: {source}")
     if not sprites_on and shown:
@@ -514,7 +516,7 @@ def main(argv=None):
     gb_inputs(s, oam_required=True)
     s.add_argument("--palettes", help="palettes JSON (CGB)")
     s.add_argument("--out", required=True)
-    s.add_argument("--json", help="write the on-screen object list here")
+    s.add_argument("--json", help="write the full object list (all 40) here")
     scale_opt(s)
     s.set_defaults(fn=cmd_gb_sprites)
 
