@@ -337,9 +337,40 @@ end
 
 -- Joypad. p.buttons is a table like {A=true, Up=true, Start=true}.
 -- p.player defaults to 1.
+--
+-- joypad.set(buttons, N) prefixes every name with "PN " ("P1 Start"). Cores
+-- with one controller (Game Boy / GBC on Gambatte, among others) name their
+-- buttons without a prefix ("Start"), so passing a player number there
+-- silently drops ALL input. Detect the naming once per call from joypad.get().
+
+--- Whether the loaded core names buttons per player ("P1 Start").
+--- @return true for multi-controller cores, false for single-controller ones
+---         (and when joypad.get is unavailable, where we keep the old behavior).
+--- @requires joypad.get (optional).
+local function core_has_player_prefixes()
+    if not CAPS.joypad_get then return true end
+    local ok, keys = pcall(joypad.get)
+    if not ok or type(keys) ~= "table" then return true end
+    for name in pairs(keys) do
+        if type(name) == "string" and name:match("^P%d+ ") then return true end
+    end
+    return false
+end
+
+--- Apply one player's buttons for the next frame.
+--- @return nothing. Raises when the core has no player `player` (player > 1
+---         on a single-controller core) or joypad.set is unavailable.
+--- @requires joypad.set; joypad.get to detect the naming scheme.
 local function set_joypad(buttons, player)
     if not CAPS.joypad_set then error("joypad.set not available") end
-    joypad.set(buttons or {}, player or 1)
+    player = player or 1
+    if core_has_player_prefixes() then
+        joypad.set(buttons or {}, player)
+    elseif player == 1 then
+        joypad.set(buttons or {})
+    else
+        error(string.format("this core has a single controller; player %d doesn't exist", player))
+    end
 end
 
 local function cmd_press_buttons(p)
@@ -471,7 +502,7 @@ local function cmd_play_input_sequence(p)
     for i, frame in ipairs(frames) do
         local buttons = (type(frame) == "table" and frame.buttons) or {}
         local player  = (type(frame) == "table" and frame.player) or 1
-        joypad.set(buttons, player)
+        set_joypad(buttons, player)
         emu.frameadvance()
         count = count + 1
 
