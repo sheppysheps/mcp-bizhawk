@@ -14,21 +14,13 @@ function harness(opts = { evalLua: false }) {
   const handlers = new Map();
   const server = { setRequestHandler: (schema, fn) => handlers.set(schema, fn) };
   const calls = [];
-  const bh = {
+  const backend = {
     call: async (method, params) => { calls.push({ method, params }); return {}; },
-    isConnected: () => false,
-    isListening: () => true,
-    notListeningReason: () => "busy",
-    isBridgeReady: () => true,
-    waitForBridge: async () => true,
-    waitForDisconnect: async () => true,
-    target: () => ({ host: "127.0.0.1", port: 1 }),
+    launch: async (rom) => { calls.push({ method: "launch", params: { rom } }); return "Launched"; },
+    close: async () => { calls.push({ method: "close" }); return "Closed"; },
+    status: async () => ({ mode: "hub", listening: true, connected: false, bridgeReady: false, bizhawkPort: 8766, hubPid: 1, hubBuild: "b", hubUptimeSeconds: 2, sessions: 1 }),
   };
-  const launcher = {
-    launch: async () => ({ pid: 1, exe: "x", rom: "y" }),
-    isRunning: () => false, pid: () => undefined, kill: () => false, waitForExit: async () => true,
-  };
-  registerTools(server, bh, launcher, opts);
+  registerTools(server, backend, opts);
   return {
     list: async () => (await handlers.get(ListToolsRequestSchema)({})).tools,
     call: (name, args = {}) => handlers.get(CallToolRequestSchema)({ params: { name, arguments: args } }),
@@ -147,13 +139,21 @@ test("every tool's inputSchema compiles", async () => {
   assert.equal(compileArgValidators(TOOLS).size, TOOLS.length);
 });
 
-test("launch refuses while another session owns the port", async () => {
+test("bizhawk_hub_status describes the hub and BizHawk connection", async () => {
+  const h = harness();
+  const r = await h.call("bizhawk_hub_status", {});
+  const text = r.content[0].text;
+  assert.match(text, /Shared hub: PID 1, up 2s, 1 session\(s\) attached/);
+  assert.match(text, /BizHawk port 8766: listening\./);
+  assert.match(text, /BizHawk: not connected/);
+});
+
+test("ping carries the stale-hub notice when the backend has one", async () => {
   const handlers = new Map();
   const server = { setRequestHandler: (schema, fn) => handlers.set(schema, fn) };
-  const bh = { isListening: () => false, notListeningReason: () => "Port 8766 is already in use", isConnected: () => false };
-  let launched = false;
-  registerTools(server, bh, { launch: async () => { launched = true; } }, { evalLua: false });
-  await assert.rejects(handlers.get(CallToolRequestSchema)({ params: { name: "bizhawk_launch", arguments: { rom: "x.gbc" } } }),
-    /Can't launch: Port 8766 is already in use/);
-  assert.equal(launched, false);
+  const backend = { call: async () => "pong", launch: async () => "", close: async () => "", status: async () => ({}),
+                    notice: () => "Note: the shared hub is running an older mcp-bizhawk build." };
+  registerTools(server, backend, { evalLua: false });
+  const r = await handlers.get(CallToolRequestSchema)({ params: { name: "bizhawk_ping", arguments: {} } });
+  assert.equal(r.content[0].text, "pong\nNote: the shared hub is running an older mcp-bizhawk build.");
 });

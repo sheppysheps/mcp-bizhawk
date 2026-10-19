@@ -6,8 +6,7 @@ import {
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import type { JsonSchemaType, JsonSchemaValidator } from "@modelcontextprotocol/sdk/validation";
-import { BizhawkServer } from "./bizhawk.js";
-import { BizhawkLauncher } from "./launcher.js";
+import type { Backend, BackendStatus } from "./backend.js";
 
 const VALID_BUTTONS = [
   "A", "B", "X", "Y",                 // Face buttons
@@ -656,6 +655,16 @@ export const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {} },
   },
 
+  {
+    name: "bizhawk_hub_status",
+    description:
+      "PURPOSE: Show how this session reaches BizHawk: the shared hub (or direct mode), how many Claude sessions share it, whether BizHawk's port is owned, and whether BizHawk is connected. " +
+      "USAGE: Call when tools fail with connection errors, or to check whether another session is using the same BizHawk before loading savestates (sessions share one emulator, so their commands interleave). " +
+      "BEHAVIOR: No side effects. By default every Claude session's mcp-bizhawk relays to one background hub that owns BizHawk's port, so switching sessions keeps the same BizHawk; the hub starts on first use and exits after 5 minutes with no sessions and no BizHawk. Never fails because BizHawk is closed. " +
+      "RETURNS: A few lines: hub PID, uptime, sessions and build (or direct mode), port ownership, BizHawk connection, and the PID of a BizHawk the hub launched.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+
   // ── Emulator control ───────────────────────────────────────────────────
 
   {
@@ -884,56 +893,36 @@ export function describeEval(r: EvalResult): string {
 }
 
 /**
- * Start BizHawk and wait for the bridge to come up.
- * @returns MCP text result with PID, ROM and connection status. Throws on
- *          validation or spawn failure, or if BizHawk is already connected.
- * @requires BizhawkLauncher (BIZHAWK_EXE configured); a listening BizhawkServer.
+ * Append the backend's notice (e.g. "the hub runs an older build") to a result.
+ * @returns `text`, plus the notice on a new line when there is one.
+ * @requires Nothing.
  */
-async function launchBizhawk(bh: BizhawkServer, launcher: BizhawkLauncher, rom: string, waitSeconds: number) {
-  if (!bh.isListening()) {
-    // The port belongs to another session; a BizHawk started now would connect THERE.
-    throw new Error(`Can't launch: ${bh.notListeningReason()}`);
-  }
-  if (bh.isConnected()) throw new Error("BizHawk is already connected. Use bizhawk_close first to restart it.");
-  const r = await launcher.launch(rom, bh.target());
-  const ready = await bh.waitForBridge(waitSeconds * 1000);
-  return ok(
-    `Launched BizHawk (PID ${r.pid})\nROM: ${r.rom}\n` +
-    (ready
-      ? "Bridge connected — ready for tool calls."
-      : `Bridge not connected after ${waitSeconds}s. BizHawk may still be starting; retry bizhawk_ping shortly.`),
-  );
+function withNotice(text: string, backend: { notice?(): string | undefined }): string {
+  const n = backend.notice?.();
+  return n ? `${text}\n${n}` : text;
 }
 
 /**
- * Close BizHawk: gracefully through the bridge, else by ending our own process.
- * @returns MCP text result describing which path was taken. Throws if BizHawk
- *          is neither connected nor launched by this server.
- * @requires BizhawkServer bridge (client.exit) or a process started by BizhawkLauncher.
+ * Format bizhawk_hub_status.
+ * @returns Multi-line text: mode, hub process and sessions, port, BizHawk connection.
+ * @requires Nothing.
  */
-async function closeBizhawk(bh: BizhawkServer, launcher: BizhawkLauncher) {
-  if (bh.isBridgeReady()) {
-    try {
-      await bh.call("close");
-      const gone = await bh.waitForDisconnect(10_000);
-      await launcher.waitForExit(10_000);
-      if (gone) return ok("BizHawk closed (client.exit).");
-      if (!launcher.isRunning()) {
-        return ok("Close sent, but BizHawk is still connected after 10s. It may be showing a dialog (e.g. save prompt).");
-      }
-    } catch (err) {
-      if (!launcher.isRunning()) throw err;
-    }
+export function describeStatus(s: BackendStatus): string {
+  const lines: string[] = [];
+  if (s.mode === "hub") {
+    lines.push(`Shared hub: PID ${s.hubPid}, up ${s.hubUptimeSeconds}s, ${s.sessions} session(s) attached, build ${s.hubBuild}.`);
+    if (s.staleHub) lines.push("This session runs a newer build; the hub restarts with it once BizHawk is closed.");
+  } else {
+    lines.push("Direct mode (BIZHAWK_HUB=0): this session owns BizHawk's port itself.");
   }
-  if (launcher.isRunning()) {
-    const pid = launcher.pid();
-    launcher.kill();
-    const exited = await launcher.waitForExit(10_000);
-    return ok(exited
-      ? `Bridge didn't respond; terminated the BizHawk process this server launched (PID ${pid}).`
-      : `Sent terminate to PID ${pid}, but it hasn't exited after 10s.`);
-  }
-  throw new Error("BizHawk isn't connected and wasn't launched by this server, so there's nothing to close.");
+  lines.push(s.listening
+    ? `BizHawk port ${s.bizhawkPort}: listening.`
+    : `BizHawk port ${s.bizhawkPort}: NOT owned. ${s.notListeningReason ?? ""}`.trim());
+  lines.push(s.connected
+    ? `BizHawk: connected${s.bridgeReady ? ", bridge.lua polling" : " (bridge.lua not polling yet)"}.`
+    : "BizHawk: not connected (start it with bizhawk_launch).");
+  if (s.launchedPid !== undefined) lines.push(`Launched by the hub: PID ${s.launchedPid}.`);
+  return lines.join("\n");
 }
 
 export interface ToolOptions {
@@ -945,12 +934,6 @@ export interface ToolOptions {
 const OPT_IN_TOOLS: Record<string, keyof ToolOptions> = { bizhawk_eval_lua: "evalLua" };
 
 /**
- * Register the MCP tool list and dispatcher.
- * @returns nothing. Opt-in tools whose switch is off are left out of tools/list,
- *          and calling them throws before anything is sent to BizHawk.
- * @requires A BizhawkServer for bridge calls; a BizhawkLauncher for launch/close.
- */
-/**
  * Compile one argument validator per tool from its inputSchema.
  * @returns Map of tool name → validator. Throws at startup if a schema is invalid,
  *          so a broken schema can never ship silently.
@@ -961,7 +944,13 @@ export function compileArgValidators(tools: Tool[]): Map<string, JsonSchemaValid
   return new Map(tools.map((t) => [t.name, provider.getValidator<unknown>(t.inputSchema as JsonSchemaType)]));
 }
 
-export function registerTools(server: Server, bh: BizhawkServer, launcher: BizhawkLauncher, opts: ToolOptions): void {
+/**
+ * Register the MCP tool list and dispatcher.
+ * @returns nothing. Opt-in tools whose switch is off are left out of tools/list,
+ *          and calling them throws before anything is sent to BizHawk.
+ * @requires A Backend: the shared hub (RemoteBackend) or a LocalBackend.
+ */
+export function registerTools(server: Server, backend: Backend & { notice?(): string | undefined }, opts: ToolOptions): void {
   const offered = TOOLS.filter((t) => !(t.name in OPT_IN_TOOLS) || opts[OPT_IN_TOOLS[t.name]]);
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: offered }));
   const validators = compileArgValidators(TOOLS);
@@ -986,12 +975,12 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
 
     switch (name) {
       case "bizhawk_ping": {
-        const r = await bh.call<string>("ping");
-        return ok(r);
+        const r = await backend.call<string>("ping");
+        return ok(withNotice(r, backend));
       }
 
       case "bizhawk_get_info": {
-        const r = await bh.call<{
+        const r = await backend.call<{
           rom_name?: string;
           rom_hash?: string;
           framecount?: number;
@@ -1018,45 +1007,45 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
             lines.push(`Missing capabilities on this BizHawk build: ${missing.join(", ")}`);
           }
         }
-        return ok(lines.join("\n"));
+        return ok(withNotice(lines.join("\n"), backend));
       }
 
       case "bizhawk_list_memory_domains": {
-        const r = await bh.call<string[]>("list_memory_domains");
+        const r = await backend.call<string[]>("list_memory_domains");
         return ok("Memory domains:\n  " + r.join("\n  "));
       }
 
-      case "bizhawk_read8":  return ok(`${addrHex(a())}: ${fmtHex(await bh.call<number>("read8", { address: a(), ...dom() }))}`);
-      case "bizhawk_read16": return ok(`${addrHex(a())}: ${fmtHex(await bh.call<number>("read16", { address: a(), ...dom() }))}`);
-      case "bizhawk_read32": return ok(`${addrHex(a())}: ${fmtHex(await bh.call<number>("read32", { address: a(), ...dom() }))}`);
+      case "bizhawk_read8":  return ok(`${addrHex(a())}: ${fmtHex(await backend.call<number>("read8", { address: a(), ...dom() }))}`);
+      case "bizhawk_read16": return ok(`${addrHex(a())}: ${fmtHex(await backend.call<number>("read16", { address: a(), ...dom() }))}`);
+      case "bizhawk_read32": return ok(`${addrHex(a())}: ${fmtHex(await backend.call<number>("read32", { address: a(), ...dom() }))}`);
 
       case "bizhawk_read_range": {
-        const bytes = await bh.call<number[]>("read_range", { address: a(), length: p.length, ...dom() });
+        const bytes = await backend.call<number[]>("read_range", { address: a(), length: p.length, ...dom() });
         const hex = bytes.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(" ");
         return ok(`${addrHex(a())} [${bytes.length} bytes${p.domain ? `, ${p.domain}` : ""}]:\n${hex}`);
       }
 
       case "bizhawk_write8": {
-        await bh.call("write8", { address: a(), value: p.value, ...dom() });
+        await backend.call("write8", { address: a(), value: p.value, ...dom() });
         return ok(`Wrote ${fmtHex(p.value)} → ${addrHex(a())}${p.domain ? ` (${p.domain})` : ""}`);
       }
       case "bizhawk_write16": {
-        await bh.call("write16", { address: a(), value: p.value, ...dom() });
+        await backend.call("write16", { address: a(), value: p.value, ...dom() });
         return ok(`Wrote ${fmtHex(p.value)} → ${addrHex(a())}${p.domain ? ` (${p.domain})` : ""}`);
       }
       case "bizhawk_write32": {
-        await bh.call("write32", { address: a(), value: p.value, ...dom() });
+        await backend.call("write32", { address: a(), value: p.value, ...dom() });
         return ok(`Wrote ${fmtHex(p.value)} → ${addrHex(a())}${p.domain ? ` (${p.domain})` : ""}`);
       }
       case "bizhawk_write_range": {
-        const r = await bh.call<{ written: number }>("write_range", { address: a(), bytes: p.bytes, ...dom() });
+        const r = await backend.call<{ written: number }>("write_range", { address: a(), bytes: p.bytes, ...dom() });
         return ok(`Wrote ${r.written} bytes → ${addrHex(a())}${p.domain ? ` (${p.domain})` : ""}`);
       }
 
       case "bizhawk_snapshot_memory": {
         const params: Record<string, unknown> = { name: p.name };
         for (const k of ["domain", "start", "length"]) if (p[k] !== undefined) params[k] = p[k];
-        const r = await bh.call<SnapshotInfo>("snapshot_memory", params);
+        const r = await backend.call<SnapshotInfo>("snapshot_memory", params);
         return ok(`Snapshot '${r.name}': ${r.domain ?? "current domain"} ${addrHex(r.start)}..${addrHex(r.start + r.length - 1)} ` +
           `(${r.length} bytes) at frame ${r.frame ?? "?"}. Store: ${kb(r.used_bytes)} of ${kb(r.max_bytes)} used.`);
       }
@@ -1065,14 +1054,14 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
         for (const k of ["value", "width", "big_endian", "aligned", "candidates", "save_as", "max_results"]) {
           if (p[k] !== undefined) params[k] = p[k];
         }
-        return ok(describeCompare(p, await bh.call<CompareResult>("compare_snapshots", params)));
+        return ok(describeCompare(p, await backend.call<CompareResult>("compare_snapshots", params)));
       }
       case "bizhawk_list_snapshots": {
-        const r = await bh.call<SnapshotList>("list_snapshots");
+        const r = await backend.call<SnapshotList>("list_snapshots");
         return ok(describeSnapshotList(r));
       }
       case "bizhawk_delete_snapshots": {
-        const r = await bh.call<{ deleted: number }>("delete_snapshots", p.name !== undefined ? { name: p.name } : {});
+        const r = await backend.call<{ deleted: number }>("delete_snapshots", p.name !== undefined ? { name: p.name } : {});
         return ok(`Deleted ${r.deleted} ${r.deleted === 1 ? "entry" : "entries"}${p.name !== undefined ? ` named '${p.name}'` : " (everything)"}.`);
       }
 
@@ -1084,7 +1073,7 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
         if (p.aligned     !== undefined) params.aligned     = p.aligned;
         if (p.max_results !== undefined) params.max_results = p.max_results;
         if (p.domain      !== undefined) params.domain      = p.domain;
-        const r = await bh.call<{
+        const r = await backend.call<{
           mode: string;
           addresses: number[];
           count: number;
@@ -1106,7 +1095,7 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
       }
 
       case "bizhawk_press_buttons": {
-        await bh.call("press_buttons", { buttons: p.buttons, player: p.player ?? 1 });
+        await backend.call("press_buttons", { buttons: p.buttons, player: p.player ?? 1 });
         const pressed = Object.entries(p.buttons as Record<string, boolean>)
           .filter(([, v]) => v).map(([k]) => k);
         return ok(`Set joypad ${p.player ?? 1}: ${pressed.length ? pressed.join("+") : "(all released)"}`);
@@ -1114,7 +1103,7 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
 
       case "bizhawk_press_buttons_multi": {
         const players = p.players as Array<{ player: number; buttons: Record<string, boolean> }>;
-        await bh.call("press_buttons_multi", { players });
+        await backend.call("press_buttons_multi", { players });
         const summary = players.map((e) => {
           const pressed = Object.entries(e.buttons ?? {}).filter(([, v]) => v).map(([k]) => k);
           return `P${e.player}: ${pressed.length ? pressed.join("+") : "(none)"}`;
@@ -1129,7 +1118,7 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
         if (p.screenshot_prefix      !== undefined) params.screenshot_prefix      = p.screenshot_prefix;
         if (p.observe_memory         !== undefined) params.observe_memory         = p.observe_memory;
         if (p.stop_on_memory_change  !== undefined) params.stop_on_memory_change  = p.stop_on_memory_change;
-        const r = await bh.call<{
+        const r = await backend.call<{
           played: number;
           final_framecount?: number;
           stopped_early?: boolean;
@@ -1186,21 +1175,21 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
       }
 
       case "bizhawk_add_breakpoint": {
-        const r = await bh.call<BreakpointSummary>("add_breakpoint", { ...p });
+        const r = await backend.call<BreakpointSummary>("add_breakpoint", { ...p });
         return ok(`Added breakpoint ${r.id}: ${describeBreakpoint(r)}`);
       }
       case "bizhawk_remove_breakpoint": {
-        const r = await bh.call<{ removed: number }>("remove_breakpoint", p.id === undefined ? {} : { id: p.id });
+        const r = await backend.call<{ removed: number }>("remove_breakpoint", p.id === undefined ? {} : { id: p.id });
         return ok(`Removed ${r.removed} breakpoint(s)`);
       }
       case "bizhawk_list_breakpoints": {
-        const r = await bh.call<BreakpointSummary[] | Record<string, never>>("list_breakpoints");
+        const r = await backend.call<BreakpointSummary[] | Record<string, never>>("list_breakpoints");
         const list = Array.isArray(r) ? r : [];
         if (!list.length) return ok("No breakpoints");
         return ok(list.map((b) => `${b.id}: ${describeBreakpoint(b)}`).join("\n"));
       }
       case "bizhawk_get_breakpoint_hits": {
-        const r = await bh.call<BreakpointSummary & { hits?: unknown[] }>("get_breakpoint_hits", {
+        const r = await backend.call<BreakpointSummary & { hits?: unknown[] }>("get_breakpoint_hits", {
           id: p.id, ...(p.limit !== undefined ? { limit: p.limit } : {}), ...(p.clear ? { clear: true } : {}),
         });
         const hits = Array.isArray(r.hits) ? r.hits : [];
@@ -1208,12 +1197,12 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
         return ok(hits.length ? `${head}\n${JSON.stringify(hits, null, 1)}` : head);
       }
       case "bizhawk_get_registers": {
-        const r = await bh.call<Record<string, number>>("get_registers");
+        const r = await backend.call<Record<string, number>>("get_registers");
         return ok(Object.entries(r).map(([k, v]) => `${k.padEnd(8)} ${fmtHex(v)}`).join("\n"));
       }
 
       case "bizhawk_eval_lua": {
-        const r = await bh.call<EvalResult>("eval_lua", {
+        const r = await backend.call<EvalResult>("eval_lua", {
           code: p.code,
           ...(p.max_instructions !== undefined ? { max_instructions: p.max_instructions } : {}),
           ...(p.max_memory_kb    !== undefined ? { max_memory_kb:    p.max_memory_kb }    : {}),
@@ -1221,28 +1210,29 @@ export function registerTools(server: Server, bh: BizhawkServer, launcher: Bizha
         return ok(describeEval(r));
       }
 
-      case "bizhawk_launch": return launchBizhawk(bh, launcher, p.rom as string, (p.wait_seconds as number) ?? 30);
-      case "bizhawk_close":  return closeBizhawk(bh, launcher);
+      case "bizhawk_launch": return ok(await backend.launch(p.rom as string, (p.wait_seconds as number) ?? 30));
+      case "bizhawk_close":  return ok(await backend.close());
+      case "bizhawk_hub_status": return ok(describeStatus(await backend.status()));
 
-      case "bizhawk_pause":         await bh.call("pause");          return ok("Emulation paused");
-      case "bizhawk_unpause":       await bh.call("unpause");        return ok("Emulation resumed");
-      case "bizhawk_reset":         await bh.call("reset");          return ok("Core reset");
+      case "bizhawk_pause":         await backend.call("pause");          return ok("Emulation paused");
+      case "bizhawk_unpause":       await backend.call("unpause");        return ok("Emulation resumed");
+      case "bizhawk_reset":         await backend.call("reset");          return ok("Core reset");
       case "bizhawk_frame_advance": {
-        const f = await bh.call<number>("frame_advance", { count: p.count ?? 1 });
+        const f = await backend.call<number>("frame_advance", { count: p.count ?? 1 });
         return ok(`Advanced ${p.count ?? 1} frame(s). Framecount: ${f}`);
       }
 
       case "bizhawk_screenshot": {
-        const path = await bh.call<string>("screenshot", { path: p.path });
+        const path = await backend.call<string>("screenshot", { path: p.path });
         return ok(`Screenshot saved: ${path}`);
       }
 
       case "bizhawk_save_state": {
-        const r = await bh.call<{ path: string }>("save_state", { path: p.path });
+        const r = await backend.call<{ path: string }>("save_state", { path: p.path });
         return ok(`Saved state to ${r.path}`);
       }
       case "bizhawk_load_state": {
-        const r = await bh.call<{ path: string }>("load_state", { path: p.path });
+        const r = await backend.call<{ path: string }>("load_state", { path: p.path });
         return ok(`Loaded state from ${r.path}`);
       }
 

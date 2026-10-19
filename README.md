@@ -158,6 +158,25 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 | `BIZHAWK_PORT` | `8766`        | TCP port to listen on for BizHawk    |
 | `BIZHAWK_EXE`  | *(unset)*     | Absolute path to `EmuHawk.exe` (or `EmuHawkMono.sh`). Only needed for `bizhawk_launch`; tool callers can't change it |
 | `BIZHAWK_EVAL_LUA` | *(unset)* | Set to `1` to offer `bizhawk_eval_lua`. Unset, agents don't see the tool and the confirmation dialog can never appear |
+| `BIZHAWK_HUB` | *(on)* | Set to `0` for direct mode: this process owns BizHawk's port itself, so only one MCP session at a time can use BizHawk |
+| `BIZHAWK_HUB_PORT` | `BIZHAWK_PORT − 1` (`8765`) | Local port the shared hub listens on for MCP sessions |
+| `MCP_BIZHAWK_HUB_IDLE_MS` | `300000` | The hub exits after this long with no sessions attached and no BizHawk connected |
+| `MCP_BIZHAWK_HUB_LOG` | *(unset)* | File the background hub appends its output to, for troubleshooting. Nothing is written when unset |
+
+### Several sessions, one BizHawk (the shared hub)
+
+BizHawk connects to exactly one port, so only one process can own it. By default, each MCP session's `mcp-bizhawk` doesn't own the port: it relays to a small background **hub** that does. The first session to use a tool starts the hub automatically.
+
+```
+session A (MCP stdio) ──┐
+                        ├──► hub ──► port 8766 ◄── BizHawk + lua/bridge.lua
+session B (MCP stdio) ──┘   (port 8765)
+```
+
+- **Switch between projects freely.** Every session sees the same BizHawk, snapshots, breakpoints and Lua consent, and closing or reloading a session doesn't cut BizHawk off.
+- **Sessions share one emulator.** Their commands run one after another in arrival order, so two sessions loading savestates at once will step on each other. `bizhawk_hub_status` shows how many sessions are attached.
+- **The hub exits on its own** 5 minutes after the last session leaves while no BizHawk is connected. After `npm run build`, a hub left running from the old build is replaced automatically once BizHawk is closed. Until then, `bizhawk_ping` and `bizhawk_get_info` add a note.
+- **Access is local only** (`127.0.0.1`). A connection must open with a proper handshake, so a web page aiming an HTTP request at the port can't run commands. There's no token: any program running as you on this PC could connect, the same as BizHawk's own port.
 
 ## Tools
 
@@ -165,6 +184,7 @@ The server speaks standard MCP over stdio. Run `mcp-bizhawk` and connect any MCP
 |------|-------------|
 | `bizhawk_launch` | Start BizHawk (from `BIZHAWK_EXE`) with a ROM and `lua/bridge.lua` preloaded; waits for the bridge |
 | `bizhawk_close` | Close BizHawk via `client.exit()`; falls back to ending the process this server launched |
+| `bizhawk_hub_status` | Show the shared hub (sessions attached, build), BizHawk port ownership and connection |
 | `bizhawk_ping` | Verify bridge connectivity (returns `pong`) |
 | `bizhawk_get_info` | ROM name, ROM hash, framecount, memory domains, capabilities |
 | `bizhawk_list_memory_domains` | List available memory domains for the loaded core |
