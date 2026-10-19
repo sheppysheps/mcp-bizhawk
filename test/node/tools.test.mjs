@@ -89,3 +89,20 @@ test("describeEval formats arrays, nil holes and empty results", () => {
   assert.match(holes, /--- output ---\nhi/);
   assert.match(describeEval({ values: [], count: 0, output: "", instructions: 0 }), /\(no return values\)/);
 });
+
+test("describeCompare lists matches and the saved set", async () => {
+  const { describeCompare } = await import("../../dist/tools.js");
+  const out = describeCompare({ before: "a", after: "b", op: "decreased", width: "u8" },
+    { count: 3, checked: 100, results: [{ address: 0xC123, before: 5, after: 4 }], truncated: true, domain: "WRAM", saved_as: "hp", saved_count: 3 });
+  assert.match(out, /^3 of 100 address\(es\) in WRAM decreased \(u8\), 'a' → 'b'\. Saved 3 as candidate set 'hp'\. Listing the first 1\./);
+  assert.match(out, /0xC123: 5 → 4/);
+});
+
+test("describeCompare and describeSnapshotList accept json.lua's {} for empty lists", async () => {
+  const { describeCompare, describeSnapshotList } = await import("../../dist/tools.js");
+  assert.match(describeCompare({ before: "a", after: "b", op: "changed" }, { count: 0, checked: 8, results: {}, truncated: false }), /^0 of 8/);
+  const list = describeSnapshotList({ snapshots: {}, candidates: {}, used_bytes: 0, max_bytes: 67108864 });
+  assert.match(list, /No snapshots\./);
+  assert.match(list, /No candidate sets\./);
+  assert.match(list, /0 KiB of 64\.0 MiB/);
+});

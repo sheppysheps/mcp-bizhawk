@@ -4,7 +4,7 @@ Practical examples of driving BizHawk through Claude (or any MCP client). Each r
 
 > Prerequisites: BizHawk running with `--socket_ip=127.0.0.1 --socket_port=8766`, ROM loaded, `lua/bridge.lua` open in **Tools → Lua Console**, or let the agent start everything with `bizhawk_launch`. Sanity-check with `bizhawk_ping` first.
 >
-> Recipes 1 and 2 diff RAM by pulling `read_range` dumps into the conversation. That's fine for small RAMs like the NES's 2 KB. For anything bigger, the planned snapshot and compare tools ([FORK-GOALS.md](FORK-GOALS.md#roadmap)) do the diff inside BizHawk.
+> Recipes 1 and 2 diff RAM by pulling `read_range` dumps into the conversation. That's fine for small RAMs like the NES's 2 KB. For anything bigger, use recipe 10: the snapshot tools do the diff inside BizHawk.
 
 The big BizHawk superpower: **the same tools work across every system its cores cover**. The only thing that changes per platform is the memory-domain name (`WRAM` for SNES vs `RAM` for NES vs `RDRAM` for N64) and the button names. Use `bizhawk_get_info` and `bizhawk_list_memory_domains` to discover both for any loaded ROM.
 
@@ -220,6 +220,45 @@ Loading starting state from ...QuickSave1.State...
 ```
 
 If you see `post-load framecount: 0` or some value far from where you'd expect, the savestate didn't apply — fix the core mismatch and rerun.
+
+---
+
+## 10. Find an unknown value with snapshots and a controlled test
+
+> "From this savestate, find the RAM address that changes when I press Start on the title screen. Use a control run so timers don't show up."
+
+You don't need to know the value ahead of time. The bridge keeps snapshots and compares them inside BizHawk, and only counts and short address lists come back. Savestates make the runs repeatable: the same state plus the same input gives byte-for-byte the same RAM.
+
+**A controlled test** (the action vs. no action, compared at the same frame):
+
+```
+1. bizhawk_save_state(path="C:/temp/base.State")
+2. bizhawk_play_input_sequence(frames=[{}, {}, ... 60 frames])                      # control: no input
+3. bizhawk_snapshot_memory(name="control", domain="WRAM")
+4. bizhawk_load_state(path="C:/temp/base.State")
+5. bizhawk_play_input_sequence(frames=[{"buttons":{"Start":true}} ×5, {} ×55])      # action
+6. bizhawk_snapshot_memory(name="action", domain="WRAM")
+7. bizhawk_compare_snapshots(before="control", after="action", op="changed", save_as="start_effects")
+```
+
+Anything that changes on its own, like timers and animation counters, ends up the same in both runs and drops out. Only what the action affected remains. Running the control twice and comparing those snapshots should give 0 matches, which is a quick way to confirm the game is deterministic from that savestate.
+
+**Narrowing, like BizHawk's RAM Search:**
+
+```
+1. bizhawk_snapshot_memory(name="a", domain="WRAM")
+2. <take damage>
+3. bizhawk_snapshot_memory(name="b", domain="WRAM")
+4. bizhawk_compare_snapshots(before="a", after="b", op="decreased", save_as="hp")
+5. <heal>
+6. bizhawk_snapshot_memory(name="c", domain="WRAM")
+7. bizhawk_compare_snapshots(before="b", after="c", op="increased", candidates="hp", save_as="hp")
+8. repeat until a few candidates remain, then confirm with bizhawk_write8 and a screenshot
+```
+
+On Shantae (GBC), snapshotting WRAM, advancing 1 frame and keeping what `increased`, then advancing 10 frames and keeping what `changed_by` 10, narrowed 32,768 addresses to 3 frame counters in two comparisons.
+
+Use `width` (`u16`, `s16`, …) for values wider than a byte, `big_endian` on big-endian systems, and `bizhawk_delete_snapshots` when the 64 MiB store fills up.
 
 ---
 
