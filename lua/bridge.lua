@@ -30,6 +30,8 @@
 local json = require("json")
 -- Memory snapshot store and comparisons (pure Lua, no system access).
 local snapshot = require("snapshot")
+-- Byte-pattern, text and relative search (pure Lua, no system access).
+local bytesearch = require("bytesearch")
 -- lua/sandbox.lua (opt-in arbitrary Lua) is NOT loaded here: it's required
 -- lazily on the first eval_lua call, so ordinary sessions never load it.
 
@@ -449,6 +451,46 @@ local function cmd_list_snapshots(p) return snapshots.list() end
 --- @return `{ deleted = n }`.
 --- @requires lua/snapshot.lua.
 local function cmd_delete_snapshots(p) return { deleted = snapshots.delete(p.name) } end
+
+-- ── Byte-pattern / text / relative search ───────────────────────────────────
+--
+-- Searches live memory (read with the same reader and 16 MiB cap as
+-- snapshots) or a stored snapshot. Logic lives in lua/bytesearch.lua.
+
+local SEARCH_BYTES_RESULT_MAX = 1000
+
+--- Search a domain region or a stored snapshot for bytes, text or relative text.
+--- @return `{ count, matches = {{address, preview, mapping?}...}, scanned, domain, truncated }`.
+---         Raises on a bad pattern/mode, an unknown snapshot, or a bad range.
+--- @requires lua/bytesearch.lua; memory domain APIs for live searches.
+local function cmd_search_bytes(p)
+    local max = p.max_results or 50
+    if max < 1 then max = 1 elseif max > SEARCH_BYTES_RESULT_MAX then max = SEARCH_BYTES_RESULT_MAX end
+    local opts = { mode = p.mode, pattern = p.pattern, text = p.text, max_results = max }
+
+    local data, base, domain
+    if p.snapshot then
+        local rec = snapshots.get(p.snapshot)
+        data, base, domain = rec.data, rec.start, rec.domain
+    else
+        domain = p.domain or (CAPS.memory_get_current_memorydomain and memory.getcurrentmemorydomain()) or nil
+        local start = p.start or 0
+        if start < 0 then error("start must be >= 0") end
+        in_domain(p.domain, function()
+            local size = CAPS.memory_get_memorydomainsize and memory.getmemorydomainsize() or nil
+            local length = p.length or (size and size - start)
+            if not length then error("no `length` given and this build can't report the domain size") end
+            if size and start + length > size then
+                error(string.format("range 0x%X+%d runs past the end of the domain (size %d)", start, length, size))
+            end
+            data, base = read_region_string(start, length), start
+        end)
+    end
+
+    local r = bytesearch.search(data, base, opts)
+    r.domain, r.truncated = domain, r.count > #r.matches
+    return r
+end
 
 local function cmd_list_memory_domains(p)
     if not CAPS.memory_get_memorydomain_list then
@@ -978,6 +1020,7 @@ local HANDLERS = {
     compare_snapshots    = cmd_compare_snapshots,
     list_snapshots       = cmd_list_snapshots,
     delete_snapshots     = cmd_delete_snapshots,
+    search_bytes         = cmd_search_bytes,
     list_memory_domains  = cmd_list_memory_domains,
     press_buttons        = cmd_press_buttons,
     press_buttons_multi  = cmd_press_buttons_multi,

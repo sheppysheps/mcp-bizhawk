@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`bizhawk_search_bytes`:** find byte patterns with `??` wildcards
+  (`CD 40 05`), exact text, or text in an unknown encoding with a relative
+  search that reports the inferred mapping (e.g. `A = 0x8B`). Searches live
+  memory (16 MiB cap) or a stored snapshot inside the bridge; only matches
+  come back. Logic in `lua/bytesearch.lua`, tested on stock Lua 5.4. On
+  Shantae's 4 MiB ROM: hex ~70 ms, text ~100 ms, relative ~0.7 s.
+
 - **Shared hub: several MCP sessions can drive one BizHawk.** By default each
   session's server now relays to a background hub (`dist/index.js --hub`,
   started automatically on first use) that owns BizHawk's port, so switching

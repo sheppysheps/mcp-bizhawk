@@ -196,6 +196,7 @@ session B (MCP stdio) ──┘   (port 8765)
 | `bizhawk_snapshot_memory` | Save a named copy of a memory region inside BizHawk (up to 16 MiB each, 64 MiB total) |
 | `bizhawk_compare_snapshots` | Find **unknown** values: changed, unchanged, increased, decreased, changed by N, equal to N; save and narrow candidate sets like BizHawk's RAM Search |
 | `bizhawk_list_snapshots` / `bizhawk_delete_snapshots` | See or free stored snapshots and candidate sets |
+| `bizhawk_search_bytes` | Find byte patterns (`CD 40 05`, `??` wildcards), exact text, or text in an **unknown encoding** (relative search, which reports the inferred character mapping); in live memory or a snapshot |
 | `bizhawk_press_buttons` | Set joypad state for one player; keys are button names, values booleans |
 | `bizhawk_frame_advance` | Step the emulator by N frames |
 | `bizhawk_pause` / `bizhawk_unpause` | Pause / resume emulation |

@@ -332,6 +332,30 @@ export const TOOLS: Tool[] = [
     },
   },
 
+  {
+    name: "bizhawk_search_bytes",
+    description:
+      "PURPOSE: Find where a byte sequence, a piece of text, or text in an UNKNOWN encoding occurs in memory, like the search in BizHawk's Hex Editor plus the ROM-hacking 'relative search'. " +
+      "USAGE: mode 'hex' finds exact bytes with ?? wildcards, e.g. pattern \"CD 40 05\" (an SM83 call $0540) or a header/magic number. mode 'text' finds the exact ASCII/UTF-8 bytes of `text`, e.g. a cartridge header title. mode 'relative' finds text whose encoding you don't know: give a word you can see in-game (`text`: \"SHANTAE\"), and it matches byte runs whose differences equal the letters' differences, reporting the inferred mapping (e.g. 'A = 0x8B'), which is the start of a text table. Use one case and a word of 5+ letters; spaces and punctuation are wildcards. Search the ROM domain for stored text, or VRAM/tile maps while text is on screen. Pass `snapshot` to search a stored snapshot (from bizhawk_snapshot_memory) instead of live memory. To find a single known VALUE use bizhawk_search_memory; for values you don't know use the snapshot tools. " +
+      "BEHAVIOR: No side effects — pure read. Runs inside one bridge tick, so large regions briefly stall the emulator (live searches share the 16 MiB snapshot cap; relative search over a full 4 MiB ROM takes about a second). Matches may overlap. Lists at most max_results; `count` is always the true total. Returns an error for a malformed hex pattern, a pattern starting with ??, a relative search with fewer than 3 letters/digits, an unknown snapshot, or a range past the end of the domain. " +
+      "RETURNS: A summary line (matches, bytes searched), then one line per match: address, the bytes there, and for relative search the inferred character mapping.",
+    inputSchema: {
+      type: "object",
+      required: ["mode"],
+      properties: {
+        mode:        { type: "string", enum: ["hex", "text", "relative"], description: "hex: `pattern` bytes with ?? wildcards. text: exact bytes of `text`. relative: `text` in an unknown encoding." },
+        pattern:     { type: "string", description: "For mode hex: bytes as two hex digits each, spaces optional, ?? for any byte, e.g. \"CD 40 05\" or \"3E ?? E0 FF\"." },
+        text:        { type: "string", minLength: 1, description: "For mode text: the exact string. For mode relative: a word seen in-game, in one case (e.g. \"SHANTAE\" or \"shantae\")." },
+        domain:      { type: "string", description: DOMAIN_PARAM_DESC },
+        start:       { type: "integer", minimum: 0, default: 0, description: "First byte offset to search (live memory only)." },
+        length:      { type: "integer", minimum: 1, description: "Bytes to search (live memory only). Omit to search to the end of the domain." },
+        snapshot:    { type: "string", description: "Search this stored snapshot instead of live memory (domain/start/length are then ignored)." },
+        max_results: { type: "integer", minimum: 1, maximum: 1000, default: 50, description: "How many matches to list (count is always the full total)." },
+      },
+      additionalProperties: false,
+    },
+  },
+
   // ── Input ───────────────────────────────────────────────────────────────
 
   {
@@ -866,6 +890,29 @@ export function describeSnapshotList(r: SnapshotList): string {
   return lines.join("\n");
 }
 
+export interface ByteSearchResult {
+  count: number;
+  scanned: number;
+  matches: { address: number; preview: string; mapping?: string }[] | Record<string, never>;
+  truncated: boolean;
+  domain?: string;
+}
+
+/**
+ * Format a byte / text / relative search.
+ * @returns A summary line, then "address: bytes [mapping]" per listed match.
+ * @requires Nothing.
+ */
+export function describeByteSearch(p: Record<string, unknown>, r: ByteSearchResult): string {
+  const what = p.mode === "hex" ? `pattern ${p.pattern}` : p.mode === "text" ? `text "${p.text}"` : `relative "${p.text}"`;
+  const where = p.snapshot ? `snapshot '${p.snapshot}'` : (r.domain ?? "memory");
+  const matches = asList(r.matches);
+  let head = `${r.count} match(es) for ${what} in ${where} [searched ${r.scanned} bytes].`;
+  if (r.truncated) head += ` Listing the first ${matches.length}.`;
+  const lines = matches.map((m) => `${addrHex(m.address)}: ${m.preview}${m.mapping ? `  (${m.mapping})` : ""}`);
+  return [head, ...lines].join("\n");
+}
+
 export interface EvalResult {
   values: unknown[] | Record<string, unknown>;
   count: number;
@@ -1063,6 +1110,14 @@ export function registerTools(server: Server, backend: Backend & { notice?(): st
       case "bizhawk_delete_snapshots": {
         const r = await backend.call<{ deleted: number }>("delete_snapshots", p.name !== undefined ? { name: p.name } : {});
         return ok(`Deleted ${r.deleted} ${r.deleted === 1 ? "entry" : "entries"}${p.name !== undefined ? ` named '${p.name}'` : " (everything)"}.`);
+      }
+
+      case "bizhawk_search_bytes": {
+        const params: Record<string, unknown> = { mode: p.mode };
+        for (const k of ["pattern", "text", "domain", "start", "length", "snapshot", "max_results"]) {
+          if (p[k] !== undefined) params[k] = p[k];
+        }
+        return ok(describeByteSearch(p, await backend.call<ByteSearchResult>("search_bytes", params)));
       }
 
       case "bizhawk_search_memory": {
