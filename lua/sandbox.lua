@@ -45,6 +45,11 @@ local MAX_OUTPUT     = 16384    -- bytes of print() output kept
 local MAX_REP        = 1048576  -- longest string string.rep may build (1 MiB)
 local PLAIN_DEPTH    = 4        -- nesting kept when returning tables
 local PLAIN_ENTRIES  = 1000     -- entries kept per returned table
+local MAX_BULK_READ  = 65536    -- bytes one bulk memory read may return
+
+-- Bulk readers whose length argument (2nd) is capped: each builds its whole
+-- result table in one C call, which the memory ceiling can't interrupt.
+local BULK_READERS = { read_bytes_as_array = true, read_bytes_as_dict = true, readbyterange = true }
 
 -- API functions exposed per BizHawk library. Anything not named here is absent.
 local HOST_WHITELIST = {
@@ -97,7 +102,19 @@ local function copy_host_lib(lib, names, has)
     local t = {}
     if not lib then return t end
     for _, name in ipairs(names) do
-        if has(lib, name) then t[name] = wrap(lib[name]) end
+        if has(lib, name) then
+            local fn = lib[name]
+            if BULK_READERS[name] then
+                t[name] = function(addr, len, ...)
+                    if (tonumber(len) or 0) > MAX_BULK_READ then
+                        error(name .. ": length over " .. MAX_BULK_READ .. " bytes; read in chunks", 2)
+                    end
+                    return fn(addr, len, ...)
+                end
+            else
+                t[name] = wrap(fn)
+            end
+        end
     end
     return t
 end
@@ -131,16 +148,30 @@ local function to_plain(v, depth)
     local tv = type(v)
     if tv == "nil" or tv == "boolean" or tv == "number" then return v end
     if tv == "string" then return json_safe(v) end
-    if tv ~= "table" then return "<" .. tostring(v) .. ">" end
+    -- Never call tostring() or pairs() on script values here: this runs on the
+    -- host side, outside the instruction budget, and both honour metamethods
+    -- (__tostring, __name, __pairs) the script may have planted. `next` is raw.
+    if tv ~= "table" then return "<" .. tv .. ">" end
     if depth >= PLAIN_DEPTH then return "<table: max depth>" end
     local out, n = {}, 0
-    for k, val in pairs(v) do
+    for k, val in next, v do
         n = n + 1
         if n > PLAIN_ENTRIES then out["..."] = "truncated"; break end
-        local key = (type(k) == "number" or type(k) == "string") and k or tostring(k)
+        local tk = type(k)
+        local key = (tk == "number" or tk == "string") and k or ("<" .. tk .. " key>")
         out[key] = to_plain(val, depth + 1)
     end
     return out
+end
+
+--- Describe a script's error value without running its metamethods.
+--- @return the message for strings/numbers/booleans, else "<error object: TYPE>".
+--- @requires Nothing.
+local function describe_error(e)
+    local te = type(e)
+    if te == "string" then return e end
+    if te == "number" or te == "boolean" then return tostring(e) end
+    return "<error object: " .. te .. ">"
 end
 
 --- Create the opt-in gate: the confirmation dialog and the consent state.
@@ -346,8 +377,8 @@ function M.run(code, opts, host)
     local results = table.pack(pcall(coroutine.resume, co))
     string.rep = host_rep
     -- results: pcall ok, resume ok, values... (or an error message at [2]/[3])
-    if not results[1] then error(tostring(results[2]), 0) end
-    if not results[2] then error(json_safe(tostring(results[3])), 0) end
+    if not results[1] then error(describe_error(results[2]), 0) end
+    if not results[2] then error(json_safe(describe_error(results[3])), 0) end
     if coroutine.status(co) ~= "dead" then error("script yielded; coroutines are not supported", 0) end
 
     local values = {}
