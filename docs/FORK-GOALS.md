@@ -66,4 +66,6 @@ Each step is a branch (they all change the protocol), comes with tests at Layers
 | 6 | **Fixture ROM and Layer 3 integration tests** ([TESTING.md](TESTING.md)) | Proves steps 1–5 against known answers | RGBDS build, redistributable. |
 | 7 | **Catalog conventions (a doc, not a tool):** a shared format for findings (address, domain, bank, width, name, evidence, confidence) that maps onto Ghidra labels and `function BB:AAAA name` annotation files | Every workflow | Lets agents in different sessions build on each other's results. |
 
+Skills (core-agnostic workflows built from these capabilities) live in `skills/`. The first, [`tile-graphics`](../skills/tile-graphics/SKILL.md), covers tile/sprite/palette extraction and was the motivation for `bizhawk_dump_memory`.
+
 Later or optional: multi-level pointer scans, read and write coverage, and driving a routine with made-up inputs mid-frame (W4 phase B).

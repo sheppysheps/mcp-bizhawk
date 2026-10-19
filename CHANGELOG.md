@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`skills/tile-graphics`**, the first skill: turns memory dumps into tile
+  sheets for most tile-based systems (GB/GBC/SNES 2bpp, NES 2bpp, SNES/PCE
+  4bpp, GBA 4/8bpp, Genesis 4bpp) and fully decodes Game Boy / Game Boy
+  Color video (tile maps with CGB attributes, 8x8/8x16 OAM sprites, priority,
+  the 10-per-line limit, DMG palettes, CGB palettes recovered from a
+  screenshot) with a pixel-exact self-check. Python standard library only;
+  15 unit tests. On Shantae's title screen the rebuilt screen matched
+  BizHawk's screenshot 100% with 0 palette conflicts. Credits Pan Docs (CC0)
+  and BizHawk's GB GPU Viewer (MIT, used as a cross-check).
+
 - **`bizhawk_dump_memory`:** write a memory region or stored snapshot
   straight to a file (up to 16 MiB; the 4 MiB Shantae ROM takes ~90 ms), so
   external decoders can read it without the bytes passing through the agent.
