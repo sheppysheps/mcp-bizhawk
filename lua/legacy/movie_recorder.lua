@@ -248,7 +248,16 @@ local function run()
         end
     end
 
-    if cfg.turbo then try(client.speedmode, 6400); try(emu.limitframerate, false) end
+    if cfg.turbo then
+        -- Speed never changes what a frame computes, so this only saves time.
+        -- If this BizHawk build lacks these calls, say so instead of failing silently.
+        local ok1 = type(client.speedmode) == "function" and pcall(client.speedmode, 6400)
+        local ok2 = type(emu.limitframerate) == "function" and pcall(emu.limitframerate, false)
+        if not (ok1 or ok2) then
+            print("movie_recorder: WARNING couldn't lift the speed limit from Lua; untick "
+                .. "Config > Speed/Skip > Clock Throttle to record faster")
+        end
+    end
 
     local lag_total, rows = 0, 0
     local length = try(movie.length) or -1

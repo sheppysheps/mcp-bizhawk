@@ -36,6 +36,8 @@ On the BizHawk the movie syncs on:
 2. **Emulation > Pause**, then **File > Movie > Play Movie** with **Read-only** ticked. Read-write mode would let inputs overwrite the movie, so the recorder refuses to run in it.
 3. **Tools > Lua Console > Script > Open Script** > `movie_recorder.lua`, then unpause.
 
+**Speed is free; frame skip isn't.** Running unthrottled never changes what a frame computes, so record as fast as the PC allows (untick Config > Speed/Skip > Clock Throttle if the recorder warns it couldn't). But frame skip skips *drawing*: memory, lag and inputs stay exact, while screenshots show the last *drawn* frame and can be a few frames stale. Set **Frameskip to 0** whenever screenshots must match their frame (e.g. for `tile-graphics`).
+
 Start with a cheap first pass: no `watch` lines, `snapshot_every = 1000`. It records every frame's lag flag and input, plus periodic snapshots. Then do targeted passes: `snapshot_frames` around an event, and `watch` on a narrow address range (every watched byte costs a callback, so the total is capped by `max_watch_bytes`).
 
 Files written to `out`: `frames.tsv`, `snapshots.tsv` plus `snap_f<frame>_<domain>.bin`, `shot_f<frame>.png`, `writes.tsv`, `run.tsv`. Frame numbers are BizHawk's on-screen frame counter after the frame ran.
