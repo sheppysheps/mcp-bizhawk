@@ -40,6 +40,23 @@ def write_png(path, width, height, pixels):
         f.write(_SIGNATURE + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + _chunk(b"IEND", b""))
 
 
+def scale_pixels(width, height, pixels, factor):
+    """Nearest-neighbour upscale, so small tiles stay crisp when zoomed.
+
+    Returns: (width * factor, height * factor, pixels). factor 1 returns the input.
+    Requires: nothing.
+    """
+    if factor <= 1:
+        return width, height, pixels
+    out = []
+    for y in range(height):
+        row = []
+        for p in pixels[y * width:(y + 1) * width]:
+            row += [p] * factor
+        out += row * factor
+    return width * factor, height * factor, out
+
+
 def _paeth(a, b, c):
     """PNG Paeth predictor. Returns the predicted byte. Requires: nothing."""
     p = a + b - c

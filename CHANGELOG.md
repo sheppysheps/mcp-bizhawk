@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   BizHawk's screenshot 100% with 0 palette conflicts. Credits Pan Docs (CC0)
   and BizHawk's GB GPU Viewer (MIT, used as a cross-check).
 
+- **tile-graphics round 2** (from the first evaluation's review): SKILL.md
+  puts complete, verified data first (nothing trimmed; full JSON in
+  `data/`), then efficiency, then a report: brief by default (answer, files,
+  checks, commands), a full write-up with method when asked, and no closing
+  questions. Every report stands alone: it records the `tilegfx.py` commit,
+  keeps every script the agent wrote under `code/`, and may quote short JSON
+  excerpts that show edge cases. New `gb-tiles` (VRAM banks colored by the palette each
+  tile is drawn with), `montage` (side-by-side comparisons) and
+  `tiles --colors/--palettes`. Every image command also writes a zoomed
+  `_4x` copy. JSON is compact, with readable keys (the title-screen map went
+  from 136 KB to 8 KB). `gb-verify` runs a negative control and reports
+  `match`/`mismatch`/`inconclusive`; plain screenshots (fades), and palettes
+  inferred under a different LCDC, now raise warnings. 21 unit tests.
+
 - **`bizhawk_dump_memory`:** write a memory region or stored snapshot
   straight to a file (up to 16 MiB; the 4 MiB Shantae ROM takes ~90 ms), so
   external decoders can read it without the bytes passing through the agent.

@@ -39,6 +39,27 @@ def parse_io(io_bytes):
     return {name: io_bytes[i] for i, name in enumerate(IO_NAMES)}
 
 
+def parse_color(value):
+    """Accept a color as "#RRGGBB" or [r, g, b].
+
+    Returns: (r, g, b) tuple. Raises ValueError for anything else.
+    Requires: nothing.
+    """
+    if isinstance(value, str):
+        s = value.lstrip("#")
+        if len(s) != 6:
+            raise ValueError(f"color must look like #RRGGBB, got {value!r}")
+        return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+    if len(value) != 3:
+        raise ValueError(f"color must be [r, g, b], got {value!r}")
+    return tuple(int(v) for v in value)
+
+
+def hex_color(rgb):
+    """Format (r, g, b) as "#RRGGBB". Returns: str. Requires: nothing."""
+    return "#{:02X}{:02X}{:02X}".format(*rgb[:3])
+
+
 def dmg_palette(reg):
     """Expand a DMG palette register (BGP/OBP0/OBP1) to 4 RGB shades.
 
@@ -169,7 +190,7 @@ class GBVideo:
             out = []
             for p in range(8):
                 src = pals[p] if pals and p < len(pals) and pals[p] else [None] * 4
-                out.append([tuple(src[c]) if c < len(src) and src[c] is not None else gray[c] for c in range(4)])
+                out.append([parse_color(src[c]) if c < len(src) and src[c] is not None else gray[c] for c in range(4)])
             return out
         return fill(given.get("bg")), fill(given.get("obj")), given.get("source", "given")
 
@@ -291,10 +312,11 @@ def infer_palettes(video, screenshot):
     from pixels where an object pixel wins. Majority wins per (palette, index).
     screenshot: (width, height, pixels) from png.read_png, 160x144.
 
-    Returns: dict {"bg", "obj": 8 x 4 [r,g,b] or null, "source", "stats"}.
-    stats.conflicts counts votes that disagreed with the winner: near zero
-    means the decoding is consistent with the picture; many conflicts mean
-    wrong registers/dumps or mid-frame effects.
+    Returns: dict {"description", "bg", "obj": 8 x 4 "#RRGGBB" or null,
+    "source", "stats", "warnings"}. stats.*.conflicting_pixels counts votes
+    that disagreed with the winner: near zero means the decoding is consistent
+    with the picture; many mean wrong registers/dumps or mid-frame effects.
+    warnings is non-empty when the screenshot is too plain to trust.
     Raises ValueError if the screenshot isn't 160x144. Requires: nothing.
     """
     w, h, shot = screenshot
@@ -318,16 +340,67 @@ def infer_palettes(video, screenshot):
             key = (bg[1], bg[0])
             votes["bg"].setdefault(key, {}).setdefault(rgb, 0)
             votes["bg"][key][rgb] += 1
-    result = {"source": "inferred from screenshot", "stats": {}}
+    result = {
+        "description": "CGB palettes recovered from a screenshot: bg[p][c] / obj[p][c] is the color shown for "
+                       "palette p, color index c, as '#RRGGBB'; null = not visible on screen, so unknown. Colors are "
+                       "in the screenshot's color space, not raw RGB555 hardware values.",
+        "source": "inferred from screenshot", "stats": {}, "warnings": []}
+    found_colors = set()
     for layer in ("bg", "obj"):
         pals = [[None] * 4 for _ in range(8)]
         agree = conflicts = 0
         for (p, c), tally in votes[layer].items():
             best, n = max(tally.items(), key=lambda kv: kv[1])
-            pals[p][c] = list(best)
+            pals[p][c] = hex_color(best)
+            found_colors.add(best)
             agree += n
             conflicts += sum(tally.values()) - n
         result[layer] = pals
-        result["stats"][layer] = {"entries_found": sum(1 for p in pals for c in p if c is not None),
-                                  "agreeing_pixels": agree, "conflicts": conflicts}
+        result["stats"][layer] = {"colors_found": sum(1 for p in pals for c in p if c is not None),
+                                  "agreeing_pixels": agree, "conflicting_pixels": conflicts}
+    result["warnings"] = screenshot_warnings(shot)
+    if len(found_colors) == 1 and not result["warnings"]:
+        result["warnings"].append(f"every recovered color is {hex_color(next(iter(found_colors)))}: these aren't "
+                                  "the game's real palettes")
     return result
+
+
+def screenshot_warnings(shot_pixels):
+    """Flag screenshots too plain to prove anything (fades, blank frames).
+
+    A frame with one or two colors gives every palette entry the same color,
+    so palette recovery and pixel-match checks pass trivially.
+    Returns: list of warning strings (empty when the frame looks usable).
+    Requires: nothing.
+    """
+    colors = {p[:3] for p in shot_pixels}
+    if len(colors) == 1:
+        return [f"the screenshot is one solid color ({hex_color(next(iter(colors)))}), probably a fade or blank "
+                "frame: recovered palettes and match percentages mean nothing. Capture a frame with visible content."]
+    if len(colors) <= 2:
+        return [f"the screenshot has only {len(colors)} colors: most palette entries can't be recovered and a "
+                "match proves little. Capture a busier frame."]
+    return []
+
+
+def tile_usage(video):
+    """Find the palette each VRAM tile is drawn with, from both tile maps and OAM.
+
+    Used to colorize whole tile banks. A tile used with several palettes keeps
+    the first one found (BG maps first, then objects in OAM order).
+    Returns: dict (bank, tile_number 0..383) -> ("bg" | "obj", palette number).
+    Requires: nothing (OAM optional).
+    """
+    use = {}
+    for map_offset in (0x1800, 0x1C00):
+        for row in range(32):
+            for col in range(32):
+                index, attr = video.map_entry(map_offset, col, row)
+                bank = 1 if (video.cgb and attr & 0x08) else 0
+                key = (bank, video.bg_tile_offset(index) // 16)
+                use.setdefault(key, ("bg", attr & 0x07 if video.cgb else 0))
+    for o in video.objects():
+        first = o["tile"] & 0xFE if o["height"] == 16 else o["tile"]
+        for t in range(o["height"] // 8):
+            use.setdefault((o["bank"], first + t), ("obj", o["palette"]))
+    return use
