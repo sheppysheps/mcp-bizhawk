@@ -983,6 +983,7 @@ export function describeStatus(s: BackendStatus): string {
   if (s.mode === "hub") {
     lines.push(`Shared hub: PID ${s.hubPid}, up ${s.hubUptimeSeconds}s, ${s.sessions} session(s) attached, build ${s.hubBuild}.`);
     if (s.staleHub) lines.push("This session runs a newer build; the hub restarts with it once BizHawk is closed.");
+    if (s.outdatedSession) lines.push("This session runs an older build than the hub (rebuilt since it started); restart the session to update. The hub is left alone.");
   } else {
     lines.push("Direct mode (BIZHAWK_HUB=0): this session owns BizHawk's port itself.");
   }

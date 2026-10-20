@@ -122,6 +122,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hub restart loop after a rebuild:** a session started before
+  `npm run build` treated the newer hub as stale, shut it down, respawned the
+  same newer build, and did it again on every call, cutting off a BizHawk
+  that was still connecting. Sessions now compare build stamps and replace
+  only an *older* hub; an older session keeps using the newer hub and says
+  to restart the session (`compareBuilds`, regression test included).
+
 - **Tool arguments are now validated against each tool's schema** (using the
   MCP SDK's Ajv validator; no new dependency). Malformed arguments, such as a
   frame written `{"Start": true}` without its `buttons` wrapper, used to reach

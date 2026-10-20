@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { openSync, closeSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Backend, BackendStatus } from "./backend.js";
-import { buildId } from "./version.js";
+import { buildId, compareBuilds } from "./version.js";
 
 export interface RemoteOptions {
   host: string;
@@ -64,6 +64,8 @@ export class RemoteBackend implements Backend {
   private pending = new Map<number, Pending>();
   private connecting: Promise<void> | null = null;
   private stale = false;
+  /** This session's build is older than the hub's (rebuilt since it started). */
+  private outdated = false;
   private readonly build: string;
   private readonly spawnHub: () => void;
   private readonly startTimeoutMs: number;
@@ -84,19 +86,26 @@ export class RemoteBackend implements Backend {
     return String(await this.request("close", {}));
   }
   async status(): Promise<BackendStatus> {
-    return { ...(await this.request("status", {}) as BackendStatus), staleHub: this.stale };
+    return { ...(await this.request("status", {}) as BackendStatus), staleHub: this.stale,
+             outdatedSession: this.outdated };
   }
 
   /**
-   * One-line warning when the hub runs an older build than this session.
-   * @returns the warning, or undefined when builds match.
+   * One-line warning when this session's build and the hub's differ.
+   * @returns the warning (hub older: it upgrades once BizHawk closes; session
+   *          older: restart the session), or undefined when builds match.
    * @requires Nothing.
    */
   notice(): string | undefined {
-    return this.stale
-      ? "Note: the shared hub is running an older mcp-bizhawk build. It restarts with this build " +
-        "automatically once BizHawk is closed (bizhawk_close)."
-      : undefined;
+    if (this.stale) {
+      return "Note: the shared hub is running an older mcp-bizhawk build. It restarts with this build " +
+        "automatically once BizHawk is closed (bizhawk_close).";
+    }
+    if (this.outdated) {
+      return "Note: this session runs an older mcp-bizhawk build than the shared hub (it was rebuilt " +
+        "after this session started). Everything still works; restart the session to load the new build.";
+    }
+    return undefined;
   }
 
   /** Drop the connection (session shutting down). The hub keeps running. */
@@ -179,7 +188,13 @@ export class RemoteBackend implements Backend {
     }
     this.attach(sock);
     const hello = await this.send("hello", { build: this.build }) as { build: string };
-    this.stale = hello.build !== this.build;
+    // Only a hub OLDER than this session is stale. If this session is the
+    // older one (the code was rebuilt after it started), replacing the hub
+    // would just respawn the same newer build, again on every call, and cut
+    // BizHawk off each time. Keep the newer hub and suggest a restart instead.
+    const order = compareBuilds(hello.build, this.build);
+    this.stale = order !== undefined && order < 0;
+    this.outdated = order !== undefined && order > 0;
   }
 
   /** Try one TCP connection to the control port. Resolves null when refused. */

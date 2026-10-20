@@ -30,8 +30,10 @@ export interface BackendStatus {
   hubBuild?: string;
   hubUptimeSeconds?: number;
   sessions?: number;
-  /** Client only: this session's build differs from the running hub's. */
+  /** Client only: the running hub is older than this session's build. */
   staleHub?: boolean;
+  /** Client only: this session is older than the hub (rebuilt since it started). */
+  outdatedSession?: boolean;
 }
 
 export interface Backend {

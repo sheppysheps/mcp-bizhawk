@@ -96,33 +96,62 @@ test("a connection whose first line isn't a hello is dropped (e.g. an HTTP reque
   assert.equal(got, "", "nothing may be answered or executed");
 }));
 
+// Build ids look like buildId(): "<version>+<mtime ms>".
+const OLD = "0.2.0+1000", NEW = "0.2.0+2000";
+
 test("a session with a newer build replaces an idle hub, but not one with BizHawk attached", async () => {
   // Idle hub (no BizHawk): the newer session asks it to exit, then starts a fresh one.
-  await withHub({ build: "OLD" }, async ({ controlPort, isStopped }) => {
+  await withHub({ build: OLD }, async ({ controlPort, isStopped }) => {
     let spawned = 0;
     const fresh = [];
-    const c = client(controlPort, { build: "NEW", spawnHub: () => {
+    const c = client(controlPort, { build: NEW, spawnHub: () => {
       spawned++;
-      startHub({ host: "127.0.0.1", bizhawkPort: 0, controlPort, idleMs: 60_000, build: "NEW" }).then((h) => fresh.push(h));
+      startHub({ host: "127.0.0.1", bizhawkPort: 0, controlPort, idleMs: 60_000, build: NEW }).then((h) => fresh.push(h));
     } });
     await c.status();  // first contact: OLD hub, stale → shutdown_if_idle on the next request
     const st = await c.status();
     assert.equal(isStopped(), true, "the old idle hub should have stopped");
     assert.equal(spawned, 1);
-    assert.equal(st.hubBuild, "NEW");
+    assert.equal(st.hubBuild, NEW);
     assert.equal(st.staleHub, false);
     c.disconnect(); fresh.forEach((h) => h.stop());
   });
   // Hub with BizHawk attached: keep it, and flag the session as stale.
-  await withHub({ build: "OLD" }, async ({ bizhawkPort, controlPort, isStopped }) => {
+  await withHub({ build: OLD }, async ({ bizhawkPort, controlPort, isStopped }) => {
     const bridge = await fakeBizhawk(bizhawkPort);
-    const c = client(controlPort, { build: "NEW" });
+    const c = client(controlPort, { build: NEW });
     assert.equal(await c.call("ping"), "pong");
     assert.equal(await c.call("ping"), "pong");
     assert.equal(isStopped(), false, "must not cut BizHawk off");
     assert.match(c.notice(), /older mcp-bizhawk build/);
     c.disconnect(); bridge.destroy();
   });
+});
+
+test("a session OLDER than the hub never replaces it (no restart loop)", () =>
+  // Regression: a session started before `npm run build` saw the newer hub as
+  // "different", shut it down, respawned the same newer build, and repeated
+  // that on every call, cutting BizHawk off while it was connecting.
+  withHub({ build: NEW }, async ({ controlPort, isStopped }) => {
+    let spawned = 0;
+    const c = client(controlPort, { build: OLD, spawnHub: () => { spawned++; } });
+    const st = await c.status();
+    await c.status();
+    await c.status();
+    assert.equal(isStopped(), false, "the newer hub must keep running");
+    assert.equal(spawned, 0, "no hub may be spawned");
+    assert.equal(st.staleHub, false);
+    assert.equal(st.outdatedSession, true);
+    assert.match(c.notice(), /restart the session/);
+    c.disconnect();
+  }));
+
+test("compareBuilds orders by build stamp and refuses to guess", async () => {
+  const { compareBuilds } = await import("../../dist/version.js");
+  assert.ok(compareBuilds(OLD, NEW) < 0);
+  assert.ok(compareBuilds(NEW, OLD) > 0);
+  assert.equal(compareBuilds(NEW, NEW), 0);
+  assert.equal(compareBuilds("0.2.0+unknown", NEW), undefined, "unknown order: never replace");
 });
 
 test("the hub stops itself after idleMs with no sessions and no BizHawk", () =>
