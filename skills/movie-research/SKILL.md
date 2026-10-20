@@ -50,6 +50,7 @@ Run from `skills/movie-research/scripts/`:
 python movie_export.py summary <out>                       # totals, lag runs, warnings
 python movie_export.py frames  <out> --from 140 --to 160   # lag flags and inputs per frame
 python movie_export.py writes  <out> --address 0xC0A0      # who wrote this byte, when, which value
+python movie_export.py timeline <out> --address 0xC9F9 --width 2 --unique   # one row per room/map seen
 python movie_export.py compare <outA> <outB>               # first divergence between two recordings
 ```
 
@@ -62,6 +63,8 @@ Add `--json <file>` to keep a full result. Long lists are truncated on screen wi
 - *first snapshot difference* per domain shows which memory changed first, with byte offsets.
 
 ### Recipes
+
+- **Which room or map is on screen?** Ask the game, not a vision model: every game keeps a "current room" variable. Record with `snapshot_on_change = <address> <width> 30`, then `timeline --unique` lists each distinct value with its first frame, visit count and a snapshot frame taken just after entering. Label each *distinct* value once, from its screenshot, instead of recognizing every frame. The `pc` of the writes leads to the room loader, and from there to each room's data. Confirm the address first: the value must change exactly at room transitions and nowhere else.
 
 - **When does an event happen?** Snapshot every N frames, find the two snapshots it falls between (by screenshot or a known RAM value), then snapshot every frame in that gap.
 - **Which byte is a flag or counter?** Diff snapshots from just before and just after the event, then `watch` the candidate addresses on a second pass: `writes` shows the exact frame, the old and new values, and the PC of the code that wrote it (a lead into the disassembly).

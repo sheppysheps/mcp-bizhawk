@@ -7,6 +7,8 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
   summary  <export>                  totals, lag runs, snapshots, write count
   frames   <export> --from N --to M  the per-frame rows (frame, lag, input)
   writes   <export> [--address A]    watched writes (frame, address, old, new, pc)
+  timeline <export> --address A      segments by a watched variable, e.g. the current
+                                     room, with a snapshot frame for each
   compare  <a> <b>                   first frame where two recordings of the same
                                      movie differ: input, lag, or memory snapshot
 
@@ -50,7 +52,9 @@ def load(folder):
     meta = {r["key"]: r["value"] for r in read_tsv(os.path.join(folder, "run.tsv"))}
     frames = [{"frame": int(r["frame"]), "lag": r["lag"] == "1", "input": r["input"]}
               for r in read_tsv(os.path.join(folder, "frames.tsv"))]
-    snaps = [{"frame": int(r["frame"]), "domain": r["domain"], "file": r["file"], "bytes": int(r["bytes"])}
+    # "reason" exists from recorder version 2 on (listed / every / change:0xADDR).
+    snaps = [{"frame": int(r["frame"]), "domain": r["domain"], "file": r["file"], "bytes": int(r["bytes"]),
+              "reason": r.get("reason") or "?"}
              for r in read_tsv(os.path.join(folder, "snapshots.tsv"))]
     writes = [{"frame": int(r["frame"]), "address": r["address"], "old": int(r["old"]), "new": int(r["new"]),
                "pc": r["pc"]} for r in read_tsv(os.path.join(folder, "writes.tsv"))]
@@ -75,6 +79,73 @@ def lag_runs(frames, top=5):
     if start is not None:
         runs.append((start, length))
     return sorted(runs, key=lambda x: (-x[1], x[0]))[:top]
+
+
+def timeline(export, address, width=1, big_endian=False, min_frames=1):
+    """Split the movie into segments by the value of a watched variable.
+
+    Built from writes.tsv: "init" rows give the starting value, later rows
+    the changes. A multi-byte value is read little-endian unless big_endian.
+    Segments shorter than min_frames (e.g. a value passing through a
+    half-written state between its two bytes) are dropped; their frames go
+    to the preceding segment (the value only counts as changed once fully
+    written), and neighbours with equal values are merged.
+    Returns: list of {"value", "start", "end", "frames", "snapshot"}, where
+    snapshot is the best snapshot frame inside the segment (one taken because
+    the value changed, else the first) or None.
+    Raises ValueError when the address was never watched.
+    Requires: an export loaded with load().
+    """
+    wanted = {address + i for i in range(width)}
+    rows = [w for w in export["writes"] if int(w["address"], 16) in wanted]
+    if not rows:
+        raise ValueError(f"0x{address:04X} isn't in writes.tsv: add 'watch' or 'snapshot_on_change' for it")
+    last_frame = export["frames"][-1]["frame"] if export["frames"] else max(w["frame"] for w in rows)
+    byte = {}
+    for w in rows:  # starting values: init rows, else the first write's old value
+        a = int(w["address"], 16)
+        if a not in byte:
+            byte[a] = w["new"] if w["pc"] == "init" else w["old"]
+
+    def value():
+        order = range(width) if big_endian else range(width - 1, -1, -1)
+        v = 0
+        for i in order:
+            v = (v << 8) | byte.get(address + i, 0)
+        return v
+
+    by_frame = {}
+    for w in rows:
+        if w["pc"] != "init":
+            by_frame.setdefault(w["frame"], []).append(w)
+    first = min(w["frame"] for w in rows)
+    segments, current, start = [], value(), first
+    for frame in sorted(by_frame):
+        for w in by_frame[frame]:
+            byte[int(w["address"], 16)] = w["new"]
+        v = value()
+        if v != current:
+            segments.append({"value": current, "start": start, "end": frame - 1})
+            current, start = v, frame
+    segments.append({"value": current, "start": start, "end": last_frame})
+
+    merged = []
+    for s in segments:
+        if s["end"] - s["start"] + 1 < min_frames and len(segments) > 1:
+            continue
+        if merged and merged[-1]["value"] == s["value"]:
+            merged[-1]["end"] = s["end"]
+        else:
+            merged.append(dict(s))
+    for i in range(len(merged) - 1):  # close gaps left by dropped segments
+        merged[i]["end"] = merged[i + 1]["start"] - 1
+    shots = sorted({(s["frame"], s["reason"]) for s in export["snapshots"]})
+    for s in merged:
+        s["frames"] = s["end"] - s["start"] + 1
+        inside = [(f, r) for f, r in shots if s["start"] <= f <= s["end"]]
+        changed = [f for f, r in inside if r.startswith("change:")]
+        s["snapshot"] = changed[0] if changed else (inside[0][0] if inside else None)
+    return merged
 
 
 def snapshot_hash(folder, snap):
@@ -196,6 +267,41 @@ def cmd_writes(args):
     _emit(args, rows, lines)
 
 
+def cmd_timeline(args):
+    """Segments of the movie by a watched variable's value. Returns: None."""
+    e = load(args.export)
+    try:
+        segs = timeline(e, int(args.address, 0), args.width, args.big_endian, args.min_frames)
+    except ValueError as err:
+        sys.exit(str(err))
+    digits = 2 * args.width
+    if args.unique:
+        by_value = {}
+        for s in segs:
+            u = by_value.setdefault(s["value"], {"value": s["value"], "first_frame": s["start"], "visits": 0,
+                                                 "frames": 0, "snapshot": s["snapshot"]})
+            u["visits"] += 1
+            u["frames"] += s["frames"]
+            if u["snapshot"] is None:
+                u["snapshot"] = s["snapshot"]
+        rows = sorted(by_value.values(), key=lambda u: u["first_frame"])
+        shown = rows[:args.limit]
+        lines = [f"{len(rows)} distinct values of {args.address} in {len(segs)} segments (first visit order)"]
+        lines += [f"  0x{u['value']:0{digits}X}  first {u['first_frame']:>7}  visits {u['visits']:>3}  "
+                  f"frames {u['frames']:>7}  shot {u['snapshot'] if u['snapshot'] is not None else '-'}"
+                  for u in shown]
+        data = rows
+    else:
+        shown = segs[:args.limit]
+        lines = [f"{len(segs)} segments, {len({s['value'] for s in segs})} distinct values of {args.address}"]
+        lines += [f"  0x{s['value']:0{digits}X}  frames {s['start']:>7}-{s['end']:<7} ({s['frames']:>6})  "
+                  f"shot {s['snapshot'] if s['snapshot'] is not None else '-'}" for s in shown]
+        data, rows = segs, segs
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
+    _emit(args, data, lines)
+
+
 def cmd_compare(args):
     """Compare two exports of the same movie. Returns: exit code 0 if identical, 1 otherwise."""
     result = compare(load(args.a), load(args.b))
@@ -246,6 +352,17 @@ def main(argv=None):
     w.add_argument("--limit", type=int, default=40)
     common(w)
     w.set_defaults(fn=cmd_writes)
+
+    t = sub.add_parser("timeline", help="segments of the movie by a watched variable (e.g. the current room)")
+    t.add_argument("export")
+    t.add_argument("--address", required=True, help="first byte of the variable, e.g. 0xC9F9")
+    t.add_argument("--width", type=int, default=1, help="bytes in the variable (default 1)")
+    t.add_argument("--big-endian", action="store_true", help="high byte first (default: little-endian)")
+    t.add_argument("--min-frames", type=int, default=1, help="drop segments shorter than this (half-written values)")
+    t.add_argument("--unique", action="store_true", help="one row per distinct value instead of per segment")
+    t.add_argument("--limit", type=int, default=40)
+    common(t)
+    t.set_defaults(fn=cmd_timeline)
 
     c = sub.add_parser("compare", help="first divergence between two recordings of one movie")
     c.add_argument("a")

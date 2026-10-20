@@ -55,6 +55,24 @@ return function(mr)
     rejects("watch total over the cap", "out = x\nwatch = 0xC000 0x2000", "max_watch_bytes")
     check("config is never executed", mr.parse_config("out = x\nos.exit(1)") == nil)
 
+    -- snapshot_on_change: parsing, the shared cap, and scheduling.
+    local oc = mr.parse_config("out = x\nwatch = 0xC000 2\nsnapshot_on_change = 0xC9F9 2 45\nsnapshot_on_change = 0xFF80 1")
+    check("snapshot_on_change parses with and without a delay", oc ~= nil and #oc.on_change == 2
+        and oc.on_change[1].delay == 45 and oc.on_change[2].delay == 30)
+    if oc then
+        local w = mr.watched_addresses(oc)
+        check("watched set covers both kinds", w[0xC000] == false and w[0xC001] == false and w[0xC9F9] == 45
+            and w[0xC9FA] == 45 and w[0xFF80] == 30 and w[0xC002] == nil)
+        check("pending snapshots win, with their reason",
+            mr.snapshot_reason(oc, 77, { [77] = "change:0xC9F9" }) == "change:0xC9F9")
+        check("no snapshot without a reason", mr.snapshot_reason(oc, 77, {}) == nil)
+    end
+    rejects("bad snapshot_on_change", "out = x\nsnapshot_on_change = 0xC9F9", "snapshot_on_change needs")
+    rejects("snapshot_on_change counts toward the cap", "out = x\nmax_watch_bytes = 2\nsnapshot_on_change = 0xC9F9 3",
+        "max_watch_bytes")
+    check("snapshot_reason labels listed and periodic frames", cfg and mr.snapshot_reason(cfg, 147, nil) == "listed"
+        and mr.snapshot_reason(cfg, 3000, nil) == "every")
+
     -- Formatting.
     check("input with presses", mr.input_string({ Start = true, A = true, B = false }) == "A|Start")
     check("input with none", mr.input_string({ A = false }) == "." and mr.input_string(nil) == ".")

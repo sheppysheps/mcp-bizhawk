@@ -18,7 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never executes its config. `skills/movie-research` reads the recordings
   (`summary`, `frames`, `writes`, and `compare`, which finds the first
   frame where two recordings of one movie diverge). CI now also runs the
-  legacy Lua spec on Lua 5.1.
+  legacy Lua spec on Lua 5.1. Recorder v2 adds `snapshot_on_change` (a
+  snapshot and screenshot a set delay after a watched value changes, e.g.
+  on entering a room), logs each watched byte's starting value, and tags
+  snapshots with their reason; `movie_export.py timeline` splits a movie
+  into segments by a watched variable, such as the current room.
 
 - **`skills/tile-graphics`**, the first skill: turns memory dumps into tile
   sheets for most tile-based systems (GB/GBC/SNES 2bpp, NES 2bpp, SNES/PCE

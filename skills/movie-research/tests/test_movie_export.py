@@ -30,12 +30,15 @@ def write_export(folder, lag_frames=(), inputs=None, snapshots=None, writes=(), 
         for n in range(1, frames + 1):
             f.write(f"{n}\t{1 if n in lag_frames else 0}\t{inputs.get(n, '.')}\n")
     with open(os.path.join(folder, "snapshots.tsv"), "w", encoding="utf-8") as f:
-        f.write("frame\tdomain\tfile\tbytes\n")
+        f.write("frame\tdomain\tfile\tbytes\treason\n")
         for (frame, domain), data in (snapshots or {}).items():
+            reason = "every"
+            if isinstance(data, tuple):  # (bytes, reason)
+                data, reason = data
             name = f"snap_f{frame:07d}_{domain}.bin"
             with open(os.path.join(folder, name), "wb") as b:
                 b.write(data)
-            f.write(f"{frame}\t{domain}\t{name}\t{len(data)}\n")
+            f.write(f"{frame}\t{domain}\t{name}\t{len(data)}\t{reason}\n")
     with open(os.path.join(folder, "writes.tsv"), "w", encoding="utf-8") as f:
         f.write("frame\taddress\told\tnew\tpc\n")
         for w in writes:
@@ -122,6 +125,40 @@ class Export(unittest.TestCase):
         _, text = run(["compare", a, b])
         self.assertIn("first input difference: 3", text)
         self.assertIn("different movies or offsets", text)
+
+    def test_timeline_two_byte_room_variable(self):
+        # Room word at 0xC9F9 (little-endian): starts at 0x0003, becomes 0x0107 at frame 4
+        # (low byte written first, so frame 4 briefly shows 0x0007), then 0x0003 again at 8.
+        ws = [(0, 0xC9F9, 3, 3, "init"), (0, 0xC9FA, 0, 0, "init"),
+              (4, 0xC9F9, 3, 7, "0x4A21"), (5, 0xC9FA, 0, 1, "0x4A23"),
+              (8, 0xC9F9, 7, 3, "0x4A21"), (8, 0xC9FA, 1, 0, "0x4A23")]
+        f = write_export(self.folder("a"), frames=12, writes=ws,
+                         snapshots={(6, "WRAM"): (b"\0", "change:0xC9FA"), (5, "WRAM"): (b"\0", "every")})
+        segs = movie_export.timeline(movie_export.load(f), 0xC9F9, width=2)
+        self.assertEqual([(s["value"], s["start"], s["end"]) for s in segs],
+                         [(0x0003, 0, 3), (0x0007, 4, 4), (0x0107, 5, 7), (0x0003, 8, 12)])
+        self.assertEqual(segs[2]["snapshot"], 6, "a change-triggered snapshot is preferred")
+        merged = movie_export.timeline(movie_export.load(f), 0xC9F9, width=2, min_frames=2)
+        # The dropped half-written frame 4 stays with the old value: the room
+        # only counts as changed once its whole value is written.
+        self.assertEqual([(s["value"], s["start"], s["end"]) for s in merged],
+                         [(0x0003, 0, 4), (0x0107, 5, 7), (0x0003, 8, 12)])
+
+    def test_timeline_cli_unique_and_errors(self):
+        ws = [(0, 0xC0A0, 1, 1, "init"), (3, 0xC0A0, 1, 2, "0x0150"), (6, 0xC0A0, 2, 1, "0x0150")]
+        f = write_export(self.folder("a"), frames=9, writes=ws)
+        _, text = run(["timeline", f, "--address", "0xC0A0", "--unique"])
+        self.assertIn("2 distinct values", text)
+        self.assertIn("visits   2", text)
+        with self.assertRaises(SystemExit):
+            run(["timeline", f, "--address", "0xD000"])
+
+    def test_old_exports_without_reason_column_still_load(self):
+        f = self.folder("old")
+        write_export(f)
+        with open(os.path.join(f, "snapshots.tsv"), "w", encoding="utf-8") as fh:
+            fh.write("frame\tdomain\tfile\tbytes\n5\tWRAM\tsnap.bin\t1\n")
+        self.assertEqual(movie_export.load(f)["snapshots"][0]["reason"], "?")
 
     def test_not_an_export(self):
         with self.assertRaises(SystemExit):
