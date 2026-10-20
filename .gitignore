@@ -20,6 +20,8 @@ Firmware/
 *_boot*.bin
 GB_*.bin
 GBC_*.bin
+GBA_*.rom
+*.rom
 
 # Movies (TAS input files) and savestates: other people's work or game
 # state, never commit. Keep them local and credit their authors.
