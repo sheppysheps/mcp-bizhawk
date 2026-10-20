@@ -12,6 +12,15 @@ CLAUDE.md
 # Local BizHawk install used for testing - never commit emulator binaries.
 bizhawk-claude/
 
+# Firmware / boot ROMs (copyrighted): keep under bizhawk-claude/Firmware or
+# outside the repo, never commit. A local pre-commit hook also blocks them.
+Firmware/
+*bios*.bin
+*bios*.zip
+*_boot*.bin
+GB_*.bin
+GBC_*.bin
+
 # Movies (TAS input files) and savestates: other people's work or game
 # state, never commit. Keep them local and credit their authors.
 *.bk2
