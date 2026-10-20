@@ -12,6 +12,13 @@ CLAUDE.md
 # Local BizHawk install used for testing - never commit emulator binaries.
 bizhawk-claude/
 
+# Movies (TAS input files) and savestates: other people's work or game
+# state, never commit. Keep them local and credit their authors.
+*.bk2
+*.bk2.zip
+*.tasproj
+*.State
+
 # ROMs - copyrighted, never commit.
 shantae.gbc
 *.gb
