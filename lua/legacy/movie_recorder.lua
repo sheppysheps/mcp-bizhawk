@@ -18,7 +18,10 @@
 --   1. Emulation > Pause, then File > Movie > Play Movie, tick Read-only.
 --   2. Tools > Lua Console > Script > Open Script > this file.
 --      It reads movie_recorder.cfg from the same folder (see the example).
---   3. Unpause. The script records until the movie ends.
+--   3. Check the script is switched ON in the Lua Console (a listed script can
+--      be off), then unpause. It prints "RECORDING" at the start, a progress
+--      line every progress_every frames, and "done" at the end. Silence means
+--      it isn't running.
 --
 -- SYSTEM ACCESS (why, and the limits): this file writes files with `io`,
 -- because BizHawk 1.x has no other way to get data out. It only writes inside
@@ -56,14 +59,15 @@ end
 --- snapshot_on_change (repeatable: "<start> <length> [delay]": watch these
 --- bytes AND snapshot `delay` frames after any of them changes, default 30,
 --- e.g. a "current room" variable, so each room gets a picture once drawn),
---- max_watch_bytes, turbo, exit_at_end, flush_every.
+--- max_watch_bytes, turbo, exit_at_end, flush_every, progress_every (print a
+--- progress line to the Lua Console every N frames; 0 = off).
 --- @return config table, or nil + error message (with the line number).
 --- @requires Nothing.
 function M.parse_config(text)
     local cfg = {
         out = nil, domains = {}, snapshot_every = 0, snapshot_frames = {},
         screenshots = true, watch = {}, on_change = {}, max_watch_bytes = 4096,
-        turbo = true, exit_at_end = false, flush_every = 600,
+        turbo = true, exit_at_end = false, flush_every = 600, progress_every = 10000,
     }
     local function bool(v, line)
         v = v:lower()
@@ -108,7 +112,8 @@ function M.parse_config(text)
                             .. "e.g. 0xC9F9 2 30", 0)
                     end
                     cfg.on_change[#cfg.on_change + 1] = { start = start, length = len, delay = delay }
-                elseif key == "snapshot_every" or key == "max_watch_bytes" or key == "flush_every" then
+                elseif key == "snapshot_every" or key == "max_watch_bytes" or key == "flush_every"
+                    or key == "progress_every" then
                     local n = M.parse_int(value)
                     if not n then error("line " .. line .. ": " .. key .. " needs a whole number", 0) end
                     cfg[key] = n
@@ -141,6 +146,15 @@ function M.snapshot_reason(cfg, frame, pending)
     if cfg.snapshot_frames[frame] then return "listed" end
     if cfg.snapshot_every > 0 and frame > 0 and frame % cfg.snapshot_every == 0 then return "every" end
     return nil
+end
+
+--- Count the keys of a table (sets like snapshot_frames have no length).
+--- @return the number of keys.
+--- @requires Nothing.
+function M.count_keys(t)
+    local n = 0
+    for _ in pairs(t) do n = n + 1 end
+    return n
 end
 
 --- Backwards-compatible yes/no form of snapshot_reason (no pending list).
@@ -305,6 +319,12 @@ local function run()
     local lag_total, rows = 0, 0
     local length = try(movie.length) or -1
     local reason = "movie ended"
+    -- Say loudly that recording started: a script that's listed in the Lua
+    -- Console but switched off prints nothing, so silence means "not running".
+    print(("movie_recorder v%s: RECORDING from frame %d of %d to %s"):format(M.VERSION, start_frame, length, out))
+    print(("movie_recorder: %d domain(s) per snapshot, every %d frames + %d listed, %d watched byte(s)%s")
+        :format(#cfg.domains, cfg.snapshot_every, M.count_keys(cfg.snapshot_frames), #addrs,
+            cfg.screenshots and ", screenshots on" or ""))
     while true do
         emu.frameadvance()
         local frame = emu.framecount()
@@ -339,6 +359,9 @@ local function run()
         end
 
         if rows % cfg.flush_every == 0 then frames:flush(); writes:flush(); snaps:flush() end
+        if cfg.progress_every > 0 and frame % cfg.progress_every == 0 then
+            print(("movie_recorder: frame %d / %d, %d lag frames so far"):format(frame, length, lag_total))
+        end
         local now = try(movie.mode)
         if now ~= "PLAY" then reason = "movie mode became " .. tostring(now); break end
         if length > 0 and frame >= length then break end

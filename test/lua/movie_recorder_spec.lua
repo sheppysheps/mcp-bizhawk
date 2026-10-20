@@ -39,7 +39,8 @@ return function(mr)
         check("watch ranges", #cfg.watch == 2 and cfg.watch[1].start == 0xC000 and cfg.watch[1].length == 16
             and cfg.watch[2].length == 4)
         check("booleans", cfg.screenshots == false and cfg.turbo == false and cfg.exit_at_end == true)
-        check("defaults kept", cfg.flush_every == 600 and cfg.max_watch_bytes == 4096)
+        check("defaults kept", cfg.flush_every == 600 and cfg.max_watch_bytes == 4096 and cfg.progress_every == 10000)
+        check("count_keys counts a frame set", mr.count_keys(cfg.snapshot_frames) == 2)
 
         check("snapshot at a listed frame", mr.should_snapshot(cfg, 147))
         check("snapshot every N", mr.should_snapshot(cfg, 2000) and not mr.should_snapshot(cfg, 1999))
@@ -67,6 +68,8 @@ return function(mr)
             mr.snapshot_reason(oc, 77, { [77] = "change:0xC9F9" }) == "change:0xC9F9")
         check("no snapshot without a reason", mr.snapshot_reason(oc, 77, {}) == nil)
     end
+    local pe = mr.parse_config("out = x\nprogress_every = 0")
+    check("progress_every can be turned off", pe ~= nil and pe.progress_every == 0)
     rejects("bad snapshot_on_change", "out = x\nsnapshot_on_change = 0xC9F9", "snapshot_on_change needs")
     rejects("snapshot_on_change counts toward the cap", "out = x\nmax_watch_bytes = 2\nsnapshot_on_change = 0xC9F9 3",
         "max_watch_bytes")
