@@ -50,11 +50,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Lua 5.4 (BizHawk 2.11 embeds 5.4)
-        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - name: Install Lua 5.4 (BizHawk 2.11 embeds 5.4) and 5.1 (BizHawk 1.x)
+        run: sudo apt-get update && sudo apt-get install -y lua5.4 lua5.1
 
       - name: Sandbox, consent gate and json.lua checks
         run: lua5.4 test/lua/run.lua
+
+      - name: Legacy scripts (lua/legacy) on Lua 5.1, as in BizHawk 1.x
+        run: lua5.1 test/lua/run-legacy.lua
 
   skills:
     name: skill tests (python on ubuntu)
@@ -64,6 +67,9 @@ jobs:
 
       - name: tile-graphics unit tests (standard library only)
         run: python3 -m unittest discover -s skills/tile-graphics/tests -v
+
+      - name: movie-research unit tests (standard library only)
+        run: python3 -m unittest discover -s skills/movie-research/tests -v
 
   ci-ok:
     name: ci-ok

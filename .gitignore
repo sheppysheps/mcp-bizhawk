@@ -23,6 +23,9 @@ GBC_*.bin
 GBA_*.rom
 *.rom
 
+# Local movie_recorder config (holds local paths); the .example.cfg is tracked.
+lua/legacy/movie_recorder.cfg
+
 # Movies (TAS input files) and savestates: other people's work or game
 # state, never commit. Keep them local and credit their authors.
 *.bk2

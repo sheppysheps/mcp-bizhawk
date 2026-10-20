@@ -2,10 +2,11 @@
 -- Usage (from the repo root): lua5.4 test/lua/run.lua
 -- Exits 0 when every check passes, 1 otherwise.
 
-package.path = "lua/?.lua;test/lua/?.lua;" .. package.path
+package.path = "lua/?.lua;lua/legacy/?.lua;test/lua/?.lua;" .. package.path
 local results = require("sandbox_spec")(require("sandbox"), require("json"))
 for _, r in ipairs(require("snapshot_spec")(require("snapshot"))) do results[#results + 1] = r end
 for _, r in ipairs(require("bytesearch_spec")(require("bytesearch"))) do results[#results + 1] = r end
+for _, r in ipairs(require("movie_recorder_spec")(require("movie_recorder"))) do results[#results + 1] = r end
 
 local failed = 0
 for _, r in ipairs(results) do

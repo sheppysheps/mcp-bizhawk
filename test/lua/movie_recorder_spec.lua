@@ -1,0 +1,76 @@
+-- lua/legacy/movie_recorder.lua: config parsing and formatting helpers. Pure Lua.
+
+--- Run every check.
+--- @return list of `{ name, pass, detail }`.
+--- @requires the movie_recorder module (returns its helpers outside BizHawk).
+return function(mr)
+    local results = {}
+    local function check(name, pass, detail)
+        results[#results + 1] = { name = "movie_recorder: " .. name, pass = pass and true or false, detail = detail }
+    end
+    local function rejects(name, text, expect)
+        local cfg, err = mr.parse_config(text)
+        check(name, cfg == nil and tostring(err):find(expect, 1, true) ~= nil, tostring(err))
+    end
+
+    -- Numbers.
+    check("parse decimal", mr.parse_int(" 146 ") == 146)
+    check("parse hex", mr.parse_int("0xC000") == 0xC000)
+    check("reject non-numbers", mr.parse_int("12a") == nil and mr.parse_int("") == nil)
+
+    -- A full config.
+    local cfg, err = mr.parse_config(table.concat({
+        "# comment line",
+        "out = C:\\path\\to\\exports\\x\\   # trailing comment",
+        "domains = WRAM, HRAM ,VRAM",
+        "snapshot_every = 1000",
+        "snapshot_frames = 147, 0x100",
+        "screenshots = no",
+        "watch = 0xC000 0x10",
+        "watch = 0xFF80 4",
+        "turbo = false",
+        "exit_at_end = yes",
+    }, "\n"))
+    check("config parses", cfg ~= nil, err)
+    if cfg then
+        check("out uses forward slashes, no trailing slash", cfg.out == "C:/path/to/exports/x", cfg.out)
+        check("domains are trimmed, in order", table.concat(cfg.domains, ",") == "WRAM,HRAM,VRAM")
+        check("snapshot frames as a set", cfg.snapshot_frames[147] and cfg.snapshot_frames[256] and not cfg.snapshot_frames[148])
+        check("watch ranges", #cfg.watch == 2 and cfg.watch[1].start == 0xC000 and cfg.watch[1].length == 16
+            and cfg.watch[2].length == 4)
+        check("booleans", cfg.screenshots == false and cfg.turbo == false and cfg.exit_at_end == true)
+        check("defaults kept", cfg.flush_every == 600 and cfg.max_watch_bytes == 4096)
+
+        check("snapshot at a listed frame", mr.should_snapshot(cfg, 147))
+        check("snapshot every N", mr.should_snapshot(cfg, 2000) and not mr.should_snapshot(cfg, 1999))
+        check("no snapshot at frame 0 from snapshot_every", not mr.should_snapshot(cfg, 0))
+    end
+
+    -- Rejections, with useful messages.
+    rejects("out is required", "domains = WRAM", "needs 'out")
+    rejects("unknown keys are refused", "out = x\nfoo = 1", "unknown key 'foo'")
+    rejects("bad lines name their line number", "out = x\njust words", "line 2")
+    rejects("bad watch", "out = x\nwatch = 0xC000", "watch needs")
+    rejects("bad boolean", "out = x\nturbo = maybe", "expected true or false")
+    rejects("watch total over the cap", "out = x\nwatch = 0xC000 0x2000", "max_watch_bytes")
+    check("config is never executed", mr.parse_config("out = x\nos.exit(1)") == nil)
+
+    -- Formatting.
+    check("input with presses", mr.input_string({ Start = true, A = true, B = false }) == "A|Start")
+    check("input with none", mr.input_string({ A = false }) == "." and mr.input_string(nil) == ".")
+    check("snapshot file names", mr.snap_name(146, "System Bus") == "snap_f0000146_System_Bus.bin"
+        and mr.snap_name(7) == "shot_f0000007.png")
+
+    -- readbyterange() results with 0- or 1-based keys.
+    local zero = { [0] = 65, [1] = 66, [2] = 300 }
+    local one = { 65, 66 }
+    check("bytes from 0-based keys", mr.bytes_to_string(zero, 3) == "AB" .. string.char(300 % 256))
+    check("bytes from 1-based keys", mr.bytes_to_string(one, 2) == "AB")
+    check("missing bytes become 0", mr.bytes_to_string({}, 2) == "\0\0")
+    local big = {}
+    for i = 0, 9999 do big[i] = i % 256 end
+    local s = mr.bytes_to_string(big, 10000)
+    check("large ranges cross chunk boundaries", #s == 10000 and s:byte(4097) == 4096 % 256 and s:byte(10000) == 9999 % 256)
+
+    return results
+end
