@@ -16,6 +16,16 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         node: [22, 24, 26]
+        # One macOS job instead of three: GitHub's macOS runners are scarce and
+        # jobs waited 7-15 minutes for a machine (one never got one and was
+        # cancelled), while the tests run in ~20 s. Node 22 and 26 stay covered
+        # on Linux and Windows; macOS keeps the LTS release for OS-specific
+        # behavior (paths, sockets, permissions).
+        exclude:
+          - os: macos-latest
+            node: 22
+          - os: macos-latest
+            node: 26
 
     steps:
       - uses: actions/checkout@v7
