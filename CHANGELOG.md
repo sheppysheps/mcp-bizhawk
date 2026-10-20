@@ -23,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   puts complete, verified data first (nothing trimmed; full JSON in
   `data/`), then efficiency, then a report: brief by default (answer, files,
   checks, commands), a full write-up with method when asked, and no closing
-  questions. New `gb-tiles` (VRAM banks colored by the palette each
+  questions. Every report stands alone: it records the `tilegfx.py` commit,
+  keeps every script the agent wrote under `code/`, and may quote short JSON
+  excerpts that show edge cases. New `gb-tiles` (VRAM banks colored by the palette each
   tile is drawn with), `montage` (side-by-side comparisons) and
   `tiles --colors/--palettes`. Every image command also writes a zoomed
   `_4x` copy. JSON is compact, with readable keys (the title-screen map went

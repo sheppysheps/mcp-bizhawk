@@ -100,7 +100,11 @@ BizHawk's Lua can't read CGB palette memory: the palette data ports `$FF69`/`$FF
 
 ## 4. Report
 
-**Where files go:** images (1x for machine checks, plus the `_4x` copies every image command writes) at the top of the output folder, full JSON under `data/`, the report as `00-report.md` so it lists first. Make side-by-side images for every comparison (screenshot | rebuilt | diff, before | after) with `tilegfx.py montage`. Never paste whole JSON (maps, sprite lists, palettes) into the report or the conversation: it buries the answer and fills the context. Quote the few values that matter.
+**Every report must stand alone.** It may be copied out of the archive and reused without the rest of the dataset or this repo, so a new maintainer must be able to see exactly how each result was reached from the report folder alone.
+
+**Where files go:** images (1x for machine checks, plus the `_4x` copies every image command writes) at the top of the output folder, full JSON under `data/`, any code you wrote under `code/`, the report as `00-report.md` so it lists first. Make side-by-side images for every comparison (screenshot | rebuilt | diff, before | after) with `tilegfx.py montage`.
+
+**JSON in the report:** never paste whole files (maps, sprite lists, palettes); they bury the answer and fill the context. Quote the few values that matter, and include a **short excerpt** (a few lines) when it shows an edge case or a surprise, such as the sprite entry that exposed a register changed mid-frame.
 
 **Read text inside graphics** (titles, logos, badges) from the zoomed copy, not the 1x image, and say when a letter is uncertain. At 1x, "GBA" and "CGB" look alike.
 
@@ -109,9 +113,9 @@ BizHawk's Lua can't read CGB palette memory: the palette data ports `$FF69`/`$FF
 1. **Answer** in the first sentence: the dimensions, the match percentage, what the files are, or that the input can't support an answer.
 2. **Files:** each file, what it shows, and whether it's **real colors** or **grayscale by color index**.
 3. **Checks:** the verification numbers (match %, negative control, conflicting pixels) and every `WARNING` the tools printed.
-4. **Commands:** the exact `tilegfx.py` commands, so the work can be rerun on another frame.
+4. **Commands and code:** the exact `tilegfx.py` commands, so the work can be rerun on another frame, plus the tool version: the commit from `git -C <skill folder> rev-parse --short HEAD` (if the skill isn't in a git checkout, say so and give the SHA-256 of `tilegfx.py`). **Save every script you wrote** under `code/`, including quick checks (byte statistics, one-off comparisons), with a one-line comment at the top saying what it does and how to run it. A throwaway script is still the only record of how a number was found.
 
-**Full write-up (when a person asks how or why, or the result is surprising):** add a numbered **method**, each step with its reason ("Recovered palettes from the screenshot, because BizHawk's Lua can't read CGB palette memory"), and save any extra code you wrote next to the outputs.
+**Full write-up (when a person asks how or why, or the result is surprising):** add a numbered **method**, each step with its reason ("Recovered palettes from the screenshot, because BizHawk's Lua can't read CGB palette memory").
 
 **If something looks wrong,** report what you suspect, the evidence (numbers, byte patterns, an image showing it) and the command that shows it, then the next steps to try. Don't end with a question: in a pipeline nobody is there to answer it.
 
