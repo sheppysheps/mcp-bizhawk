@@ -1,6 +1,6 @@
 ---
 name: tile-graphics
-description: Extract tile graphics, tile maps and sprites from a running game as PNG + JSON, using mcp-bizhawk memory dumps. Raw tile sheets for any tile-based system (Game Boy, NES, SNES, GBA, Genesis layouts), optionally colorized; full Game Boy / Game Boy Color decoding (tile banks colored by use, tile maps with CGB attributes, OAM sprites, palettes recovered from a screenshot) with a pixel-exact self-check and negative control against BizHawk's screenshot. Use when asked to rip, view, catalog or verify a game's tiles, sprites, backgrounds or palettes, or to render a binary dump as tiles.
+description: Extract tile graphics, tile maps and sprites from a running game as PNG + JSON, using mcp-bizhawk memory dumps. Raw tile sheets for any tile-based system (Game Boy, NES, SNES, GBA, Genesis layouts), optionally colorized; full Game Boy / Game Boy Color decoding (tile banks colored by use, tile maps with CGB attributes, OAM sprites, palettes recovered from a screenshot) with a pixel-exact self-check and negative control against BizHawk's screenshot. Use when asked to rip, view, catalog or verify a game's tiles, sprites, backgrounds or palettes, or to render a binary dump as tiles. Load it even before a dump or file is available: it explains how to capture one live from BizHawk and what to ask for otherwise.
 ---
 
 # tile-graphics
@@ -19,6 +19,14 @@ The skill only reads dump files. It never talks to the emulator: you capture sta
 
 - mcp-bizhawk with **`BIZHAWK_DUMP_DIR`** set in its MCP config (where `bizhawk_dump_memory` writes).
 - A game running in BizHawk (`bizhawk_launch`).
+
+## 0. No dump yet?
+
+If the request names no file, or the file doesn't exist:
+
+1. Call `bizhawk_hub_status`. If BizHawk is connected with a game loaded, offer to capture the current moment (section 1), or just do it when the request is clearly about what's on screen now.
+2. Otherwise, ask for only what's missing, in one message: the file path, and the system or tile format if the file name doesn't make it obvious (show the `--format` table in section 2). Mention that a live capture is also possible once BizHawk is running.
+3. Don't guess a format silently. If you must try one, say which, and show the zoomed sheet so the person can judge it.
 
 ## 1. Capture one moment (mcp-bizhawk tools)
 

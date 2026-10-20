@@ -25,7 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks, commands), a full write-up with method when asked, and no closing
   questions. Every report stands alone: it records the `tilegfx.py` commit,
   keeps every script the agent wrote under `code/`, and may quote short JSON
-  excerpts that show edge cases. New `gb-tiles` (VRAM banks colored by the palette each
+  excerpts that show edge cases. A new "No dump yet?" step covers requests
+  without input (live capture, or ask for just the path and format), and the
+  description asks to load the skill before any dump exists, after a trigger
+  test found the skill recognized but not loaded. New `gb-tiles` (VRAM banks colored by the palette each
   tile is drawn with), `montage` (side-by-side comparisons) and
   `tiles --colors/--palettes`. Every image command also writes a zoomed
   `_4x` copy. JSON is compact, with readable keys (the title-screen map went
