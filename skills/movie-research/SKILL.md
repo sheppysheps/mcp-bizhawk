@@ -40,7 +40,7 @@ On the BizHawk the movie syncs on:
 
 Start with a cheap first pass: no `watch` lines, `snapshot_every = 1000`. It records every frame's lag flag and input, plus periodic snapshots. Then do targeted passes: `snapshot_frames` around an event, and `watch` on a narrow address range (every watched byte costs a callback, so the total is capped by `max_watch_bytes`).
 
-Files written to `out`: `frames.tsv`, `snapshots.tsv` plus `snap_f<frame>_<domain>.bin`, `shot_f<frame>.png`, `writes.tsv`, `run.tsv`. Frame numbers are BizHawk's on-screen frame counter after the frame ran.
+Files written to `out`: `frames.tsv`, `snapshots.tsv` plus `snap_f<frame>_<domain>.bin`, `shot_f<frame>_<reason>.png` (reason `every`, `listed` or `change-0x<address>`, so a folder listing shows which shots a watched change triggered), `writes.tsv`, `run.tsv`. Frame numbers are BizHawk's on-screen frame counter after the frame ran.
 
 ## 2. Read the results
 

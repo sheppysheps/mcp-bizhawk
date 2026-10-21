@@ -87,6 +87,8 @@ return function(mr)
     check("input with none", mr.input_string({ A = false }) == "." and mr.input_string(nil) == ".")
     check("snapshot file names", mr.snap_name(146, "System Bus") == "snap_f0000146_System_Bus.bin"
         and mr.snap_name(7) == "shot_f0000007.png")
+    check("screenshot names carry the reason", mr.snap_name(6339, nil, "change:0xC3F0") == "shot_f0006339_change-0xC3F0.png"
+        and mr.snap_name(6300, nil, "every") == "shot_f0006300_every.png")
 
     -- readbyterange() results with 0- or 1-based keys.
     local zero = { [0] = 65, [1] = 66, [2] = 300 }

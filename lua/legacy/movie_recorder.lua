@@ -8,7 +8,8 @@
 -- What it records (all into the `out` folder named in the config):
 --   frames.tsv     every frame: frame counter, lag flag, the movie's input
 --   snap_f<frame>_<domain>.bin + snapshots.tsv   memory dumps at chosen frames
---   shot_f<frame>.png    screenshots at the same frames
+--   shot_f<frame>_<reason>.png    screenshots at the same frames, named by
+--                  why they were taken (every, listed, change-0x<address>)
 --   writes.tsv     for watched System Bus addresses: frame, address, old and
 --                  new value, and the code address (PC) that wrote it
 --                  ("init" rows give each watched byte's value at the start)
@@ -35,7 +36,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "7"
+M.VERSION = "8"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -200,11 +201,14 @@ function M.input_string(input)
     return table.concat(pressed, "|")
 end
 
---- File name for a snapshot or screenshot.
---- @return e.g. "snap_f0000146_WRAM.bin" or "shot_f0000146.png".
+--- File name for a snapshot or screenshot. A screenshot name carries the
+--- snapshot reason when given, so a folder listing shows why it was taken.
+--- @return e.g. "snap_f0000146_WRAM.bin", "shot_f0000146.png" or
+---         "shot_f0006339_change-0xC3F0.png" (reason "change:0xC3F0").
 --- @requires Nothing.
-function M.snap_name(frame, domain)
+function M.snap_name(frame, domain, reason)
     if domain then return ("snap_f%07d_%s.bin"):format(frame, (domain:gsub("[^%w]", "_"))) end
+    if reason then return ("shot_f%07d_%s.png"):format(frame, (reason:gsub("[^%w]+", "-"))) end
     return ("shot_f%07d.png"):format(frame)
 end
 
@@ -512,7 +516,7 @@ local function step(st)
         end
         if cfg.screenshots then
             if tr then trace(("snapshot f%d: screenshot"):format(frame), true) end
-            try(client.screenshot, st.out .. M.snap_name(frame))
+            try(client.screenshot, st.out .. M.snap_name(frame, nil, snap_reason))
         end
         if tr then trace(("snapshot f%d: done"):format(frame), true) end
     end
