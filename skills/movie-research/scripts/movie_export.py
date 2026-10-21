@@ -13,6 +13,8 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
                                      address ran, raw or grouped by distinct values;
                                      --writes: registers at each write to a watch
                                      line with 'registers'
+  shots    <export> [--dark 0.5]     screenshots with mean brightness; --dark lists
+                                     dips (fades, black transition screens)
   compare  <a> <b>                   first frame where two recordings of the same
                                      movie differ: input, lag, or memory snapshot
 
@@ -27,7 +29,14 @@ import csv
 import hashlib
 import json
 import os
+import re
 import sys
+
+# The PNG reader sits next to this script (a copy of tile-graphics' png.py, so
+# this skill works on its own). Put this folder first on the path: `python -I`
+# leaves it off, and an installed package named "png" must not win.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import png  # noqa: E402
 
 
 # ── Reading an export folder ──────────────────────────────────────────────
@@ -424,6 +433,58 @@ def cmd_timeline(args):
     _emit(args, data, lines)
 
 
+SHOT_RE = re.compile(r"^shot_f(\d+)(?:_(.+))?\.png$")
+
+
+def list_shots(folder):
+    """Find the recorder's screenshots in an export folder.
+
+    Returns: list of {"frame", "reason", "file"} sorted by frame; the reason is
+    "?" for screenshots from recorders before version 8 (no reason in the name).
+    Requires: read access to the folder.
+    """
+    shots = []
+    for name in os.listdir(folder):
+        m = SHOT_RE.match(name)
+        if m:
+            shots.append({"frame": int(m.group(1)), "reason": m.group(2) or "?", "file": name})
+    return sorted(shots, key=lambda s: s["frame"])
+
+
+def brightness(path):
+    """Mean luminance of a screenshot (0 black .. 255 white, Rec. 601 weights).
+
+    Returns: float. Raises ValueError for PNG formats png.read_png can't read.
+    Requires: png.read_png (standard library only).
+    """
+    width, height, pixels = png.read_png(path)
+    total = sum(0.299 * r + 0.587 * g + 0.114 * b for r, g, b, _ in pixels)
+    return total / max(1, width * height)
+
+
+def cmd_shots(args):
+    """Screenshots with their mean brightness; --dark lists only dips (fades,
+    black transition screens) below a fraction of the median. Returns: None."""
+    shots = [s for s in list_shots(args.export) if args.start <= s["frame"] <= args.end]
+    if not shots:
+        _emit(args, [], ["no screenshots in that range"])
+        return
+    for s in shots:
+        s["brightness"] = round(brightness(os.path.join(args.export, s["file"])), 1)
+    values = sorted(s["brightness"] for s in shots)
+    median = values[len(values) // 2]
+    limit = median * args.dark if args.dark is not None else None
+    rows = [s for s in shots if limit is None or s["brightness"] <= limit]
+    shown = rows[:args.limit]
+    head = f"{len(shots)} screenshots, median brightness {median:.1f}"
+    if limit is not None:
+        head += f"; {len(rows)} at or below {args.dark:g} x median ({limit:.1f})"
+    lines = [head] + [f"  f{s['frame']:>7}  {s['brightness']:>6.1f}  {s['reason']}" for s in shown]
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
+    _emit(args, rows, lines)
+
+
 def cmd_compare(args):
     """Compare two exports of the same movie. Returns: exit code 0 if identical, 1 otherwise."""
     result = compare(load(args.a), load(args.b))
@@ -499,6 +560,16 @@ def main(argv=None):
     x.add_argument("--limit", type=int, default=40)
     common(x)
     x.set_defaults(fn=cmd_execs)
+
+    sh = sub.add_parser("shots", help="screenshots with mean brightness; --dark finds fades")
+    sh.add_argument("export")
+    sh.add_argument("--dark", type=float, help="only list shots at or below this fraction of the median "
+                                               "brightness, e.g. 0.5 for fades and black screens")
+    sh.add_argument("--from", dest="start", type=int, default=0)
+    sh.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    sh.add_argument("--limit", type=int, default=40)
+    common(sh)
+    sh.set_defaults(fn=cmd_shots)
 
     c = sub.add_parser("compare", help="first divergence between two recordings of one movie")
     c.add_argument("a")

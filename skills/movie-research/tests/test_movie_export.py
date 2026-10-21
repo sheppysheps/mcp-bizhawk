@@ -218,6 +218,21 @@ class Export(unittest.TestCase):
         _, none = run(["execs", f])
         self.assertIn("no execs.tsv", none)
 
+    def test_shots_brightness_finds_a_fade(self):
+        f = write_export(self.folder("a"))
+        grey = lambda v: [(v, v, v, 255)] * 16  # noqa: E731
+        for frame, level, reason in ((100, 200, "range"), (110, 10, "range"), (120, 190, "range"), (130, 205, "every")):
+            movie_export.png.write_png(os.path.join(f, f"shot_f{frame:07d}_{reason}.png"), 4, 4, grey(level))
+        movie_export.png.write_png(os.path.join(f, "shot_f0000140.png"), 4, 4, grey(195))  # pre-v8 name
+        shots = movie_export.list_shots(f)
+        self.assertEqual([s["frame"] for s in shots], [100, 110, 120, 130, 140])
+        self.assertEqual(shots[-1]["reason"], "?")
+        self.assertAlmostEqual(movie_export.brightness(os.path.join(f, shots[1]["file"])), 10, places=3)
+        _, text = run(["shots", f, "--dark", "0.5"])
+        self.assertIn("5 screenshots, median brightness 195.0; 1 at or below 0.5 x median", text)
+        self.assertIn("f    110    10.0  range", text)
+        self.assertNotIn("f    100", text)
+
     def test_execs_without_execs_file(self):
         f = write_export(self.folder("a"))
         _, text = run(["execs", f])

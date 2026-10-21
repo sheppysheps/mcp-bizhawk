@@ -43,6 +43,21 @@ return function(mr)
         and mr.registers_string({}) == "?" and mr.registers_string(nil) == "?")
     check("hex_bytes", mr.hex_bytes({ 10, 27, 255, 256 }) == "0A1BFF00" and mr.hex_bytes({}) == "")
 
+    -- snapshot_range and stop_after.
+    local rc = mr.parse_config("out = x\nsnapshot_range = 100 130 10\nsnapshot_range = 0x200 0x200 1\nstop_after = 140")
+    check("snapshot_range and stop_after parse", rc and #rc.snapshot_ranges == 2 and rc.snapshot_ranges[2].start == 0x200
+        and rc.stop_after == 140)
+    if rc then
+        check("snapshot_range hits start, steps and end only",
+            mr.snapshot_reason(rc, 100, nil) == "range" and mr.snapshot_reason(rc, 120, nil) == "range"
+            and mr.snapshot_reason(rc, 130, nil) == "range" and mr.snapshot_reason(rc, 125, nil) == nil
+            and mr.snapshot_reason(rc, 140, nil) == nil and mr.snapshot_reason(rc, 0x200, nil) == "range")
+    end
+    rejects("snapshot_range rejects end before start", "out = x\nsnapshot_range = 10 5 1", "snapshot_range needs")
+    rejects("snapshot_range rejects step 0", "out = x\nsnapshot_range = 1 5 0", "snapshot_range needs")
+    local d0 = mr.parse_config("out = x")
+    check("stop_after defaults to 0 (play to the end)", d0 and d0.stop_after == 0 and #d0.snapshot_ranges == 0)
+
     -- watch lines with register logging.
     local pw = mr.parse_watch("0xCC30 0x30")
     check("plain watch logs no registers", pw and pw.start == 0xCC30 and pw.length == 0x30 and pw.registers == false)

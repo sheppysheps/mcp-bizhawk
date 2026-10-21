@@ -36,7 +36,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "11"
+M.VERSION = "12"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -60,7 +60,9 @@ end
 
 --- Parse the recorder config: `key = value` lines, `#` comments.
 --- Keys: out (required), domains, snapshot_every, snapshot_frames,
---- screenshots, watch (repeatable: "<start> <length>" on the System Bus),
+--- snapshot_range (repeatable: "<start> <end> <step>": snapshot every <step>
+--- frames from <start> to <end>, for dense coverage of a window), stop_after
+--- (end the recording after this frame; 0 = play to the end), screenshots, watch (repeatable: "<start> <length>" on the System Bus),
 --- snapshot_on_change (repeatable: "<start> <length> [delay]": watch these
 --- bytes AND snapshot `delay` frames after any of them changes, default 30,
 --- e.g. a "current room" variable, so each room gets a picture once drawn),
@@ -78,7 +80,7 @@ function M.parse_config(text)
         out = nil, domains = {}, snapshot_every = 0, snapshot_frames = {},
         screenshots = true, watch = {}, on_change = {}, max_watch_bytes = 4096,
         turbo = true, exit_at_end = false, flush_every = 600, progress_every = 10000,
-        heartbeat_every = 0, trace_snapshots = true, exec = {},
+        heartbeat_every = 0, trace_snapshots = true, exec = {}, snapshot_ranges = {}, stop_after = 0,
     }
     local function bool(v, line)
         v = v:lower()
@@ -101,6 +103,15 @@ function M.parse_config(text)
                         local name = M.trim(d)
                         if name ~= "" then cfg.domains[#cfg.domains + 1] = name end
                     end
+                elseif key == "snapshot_range" then
+                    local a, b, c = value:match("^(%S+)%s+(%S+)%s+(%S+)$")
+                    local first, last = a and M.parse_int(a), b and M.parse_int(b)
+                    local step = c and M.parse_int(c)
+                    if not first or not last or not step or step < 1 or last < first then
+                        error("line " .. line .. ": snapshot_range needs '<start> <end> <step>' with "
+                            .. "start <= end and step >= 1, e.g. 195800 198300 10", 0)
+                    end
+                    cfg.snapshot_ranges[#cfg.snapshot_ranges + 1] = { start = first, stop = last, step = step }
                 elseif key == "snapshot_frames" then
                     for f in value:gmatch("[^,]+") do
                         local n = M.parse_int(f)
@@ -128,7 +139,7 @@ function M.parse_config(text)
                     end
                     cfg.exec[#cfg.exec + 1] = w
                 elseif key == "snapshot_every" or key == "max_watch_bytes" or key == "flush_every"
-                    or key == "progress_every" or key == "heartbeat_every" then
+                    or key == "progress_every" or key == "heartbeat_every" or key == "stop_after" then
                     local n = M.parse_int(value)
                     if not n then error("line " .. line .. ": " .. key .. " needs a whole number", 0) end
                     cfg[key] = n
@@ -274,11 +285,14 @@ end
 
 --- Decide whether to snapshot at this frame, and why.
 --- `pending` maps frame -> reason for snapshots scheduled by snapshot_on_change.
---- @return a reason ("listed", "every", or the pending reason), or nil for no snapshot.
+--- @return a reason ("listed", "range", "every", or the pending reason), or nil for no snapshot.
 --- @requires Nothing.
 function M.snapshot_reason(cfg, frame, pending)
     if pending and pending[frame] then return pending[frame] end
     if cfg.snapshot_frames[frame] then return "listed" end
+    for _, r in ipairs(cfg.snapshot_ranges or {}) do
+        if frame >= r.start and frame <= r.stop and (frame - r.start) % r.step == 0 then return "range" end
+    end
     if cfg.snapshot_every > 0 and frame > 0 and frame % cfg.snapshot_every == 0 then return "every" end
     return nil
 end
@@ -735,6 +749,7 @@ local function step(st)
     end
     local now = movie_mode()
     if now ~= "PLAY" then st.reason = "movie mode became " .. tostring(now); return true end
+    if cfg.stop_after > 0 and frame >= cfg.stop_after then st.reason = "stop_after " .. cfg.stop_after; return true end
     return st.length > 0 and frame >= st.length
 end
 

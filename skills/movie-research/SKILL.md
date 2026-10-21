@@ -53,6 +53,7 @@ python movie_export.py writes  <out> --address 0xC0A0      # who wrote this byte
 python movie_export.py timeline <out> --address 0xC9F9 --width 2 --unique   # one row per room/map seen
 python movie_export.py compare <outA> <outB>               # first divergence between two recordings
 python movie_export.py execs   <out> --address 0x1234 --group HL,DE,stack0   # distinct register values when code ran
+python movie_export.py shots   <out> --dark 0.5            # screenshots darker than half the median: fades
 ```
 
 Add `--json <file>` to keep a full result. Long lists are truncated on screen with a count of what was left out.
@@ -67,6 +68,7 @@ Add `--json <file>` to keep a full result. Long lists are truncated on screen wi
 
 - **Which room or map is on screen?** Ask the game, not a vision model: every game keeps a "current room" variable. Record with `snapshot_on_change = <address> <width> 30`, then `timeline --unique` lists each distinct value with its first frame, visit count and a snapshot frame taken just after entering. Label each *distinct* value once, from its screenshot, instead of recognizing every frame. The `pc` of the writes leads to the room loader, and from there to each room's data. Confirm the address first: the value must change exactly at room transitions and nowhere else.
   - *Finding the variable:* room loads usually show up as lag bursts of a typical length in `frames.tsv`. Rank bytes by how well their changes between snapshots match those bursts (precision: it changes only at bursts; recall: it changes at every burst), then confirm the best candidates with `watch` on a second pass. A block of many bytes changing together is a buffer the room loader fills, not the ID.
+  - *Not every transition lags.* Some doors are only a palette fade with no load, so they leave no lag burst. Find them by brightness instead: record the window with `snapshot_range = <start> <end> 5` and `stop_after`, then `shots --dark 0.5` lists the screenshots darker than half the median, i.e. the fades and black transition screens, to within the step. Rank bytes against those frames.
   - *Expect more than one kind of transition.* Bursts the candidate doesn't explain are the next lead: a game may teleport inside one large map (a fade with no room change), or scroll into a neighboring map with no fade at all. Rank again against only the unexplained bursts, and check a few screenshots by eye, since the person watching the movie spots transitions that the numbers miss.
 
 - **Where is the table a routine reads?** The registers of the code that copies a value point at its source. Two ways to log them:
