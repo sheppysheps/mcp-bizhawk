@@ -30,13 +30,16 @@
 -- SYSTEM ACCESS (why, and the limits): this file writes files with `io`,
 -- because BizHawk 1.x has no other way to get data out. It only writes inside
 -- the configured `out` folder, using fixed file names, plus its own
--- movie_recorder.log next to the script (stage log); it never reads or runs
--- other files, never uses `os.execute`, `luanet` or the network, and never
--- executes its config (the config is parsed as plain `key = value` text).
+-- movie_recorder.log next to the script (stage log). Savestates go through
+-- BizHawk's own savestate API: `save_states` writes state_f<frame>.State into
+-- `out`, and `start_state` loads the one file the config names (a checkpoint
+-- made during the same movie). It never reads or runs other files, never uses
+-- `os.execute`, `luanet` or the network, and never executes its config (the
+-- config is parsed as plain `key = value` text).
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "12"
+M.VERSION = "13"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -62,7 +65,9 @@ end
 --- Keys: out (required), domains, snapshot_every, snapshot_frames,
 --- snapshot_range (repeatable: "<start> <end> <step>": snapshot every <step>
 --- frames from <start> to <end>, for dense coverage of a window), stop_after
---- (end the recording after this frame; 0 = play to the end), screenshots, watch (repeatable: "<start> <length>" on the System Bus),
+--- (end the recording after this frame; 0 = play to the end), save_states
+--- (frames at which to save a checkpoint savestate into `out`), start_state
+--- (a checkpoint to load at startup, so recording starts there), screenshots, watch (repeatable: "<start> <length>" on the System Bus),
 --- snapshot_on_change (repeatable: "<start> <length> [delay]": watch these
 --- bytes AND snapshot `delay` frames after any of them changes, default 30,
 --- e.g. a "current room" variable, so each room gets a picture once drawn),
@@ -81,6 +86,7 @@ function M.parse_config(text)
         screenshots = true, watch = {}, on_change = {}, max_watch_bytes = 4096,
         turbo = true, exit_at_end = false, flush_every = 600, progress_every = 10000,
         heartbeat_every = 0, trace_snapshots = true, exec = {}, snapshot_ranges = {}, stop_after = 0,
+        save_states = {}, start_state = nil,
     }
     local function bool(v, line)
         v = v:lower()
@@ -98,6 +104,15 @@ function M.parse_config(text)
                 if not key then error("line " .. line .. ": expected 'key = value'", 0) end
                 if key == "out" then
                     cfg.out = (value:gsub("\\", "/"):gsub("/+$", ""))
+                elseif key == "start_state" then
+                    if value == "" then error("line " .. line .. ": start_state needs a savestate file path", 0) end
+                    cfg.start_state = (value:gsub("\\", "/"))
+                elseif key == "save_states" then
+                    for f in value:gmatch("[^,]+") do
+                        local n = M.parse_int(f)
+                        if not n or n < 1 then error("line " .. line .. ": bad save_states frame '" .. M.trim(f) .. "'", 0) end
+                        cfg.save_states[n] = true
+                    end
                 elseif key == "domains" then
                     for d in value:gmatch("[^,]+") do
                         local name = M.trim(d)
@@ -523,10 +538,31 @@ local function setup()
             .. "). Recording mode would let inputs overwrite the movie.", 0)
     end
 
+    -- Checkpoint start: load a savestate made earlier during this same movie.
+    -- In read-only playback BizHawk then continues the movie from that frame,
+    -- so recording starts there instead of at power-on. The file must exist
+    -- and the movie must still be playing afterwards.
+    if cfg.start_state then
+        local probe = io.open(cfg.start_state, "rb")
+        if not probe then error("start_state not found: " .. cfg.start_state, 0) end
+        probe:close()
+        if not callable(savestate.load) then error("this BizHawk build has no savestate.load", 0) end
+        local before = emu.framecount()
+        local loaded, load_err = pcall(savestate.load, cfg.start_state)
+        if not loaded then error("couldn't load start_state " .. cfg.start_state .. ": " .. tostring(load_err), 0) end
+        local after_mode = movie_mode()
+        trace(("loaded start_state %s: frame %d -> %d, movie.mode() = %s"):format(
+            cfg.start_state, before, emu.framecount(), tostring(after_mode)))
+        if after_mode ~= "PLAY" then
+            error("after loading start_state the movie is no longer playing (mode " .. tostring(after_mode)
+                .. "): was the state saved during this movie?", 0)
+        end
+    end
+
     local st = {
         cfg = cfg, text = text, out = cfg.out .. "/", start_frame = emu.framecount(),
         sizes = {}, shadow = {}, dirty = {}, pending = {}, delays = M.watched_addresses(cfg),
-        lag_total = 0, rows = 0, length = try(movie.length) or -1, reason = "movie ended",
+        lag_total = 0, rows = 0, length = try(movie.length) or -1, reason = "movie ended", states_saved = {},
     }
     trace("opening output files in " .. st.out)
     st.frames = buffered(st.out .. "frames.tsv")
@@ -711,6 +747,16 @@ local function step(st)
         st.dirty[a] = nil
     end
 
+    -- Checkpoints: a savestate at chosen frames, for later passes that start
+    -- there (start_state). Saved after the frame's data, so loading it
+    -- continues with the next frame.
+    if cfg.save_states[frame] then
+        local name = ("state_f%07d.State"):format(frame)
+        local ok, err = pcall(savestate.save, st.out .. name)
+        trace(ok and ("saved checkpoint " .. name) or ("couldn't save checkpoint " .. name .. ": " .. tostring(err)))
+        if ok then st.states_saved[#st.states_saved + 1] = name end
+    end
+
     local snap_reason = M.snapshot_reason(cfg, frame, st.pending)
     st.pending[frame] = nil
     if snap_reason then
@@ -768,6 +814,8 @@ local function finish(st)
     meta:add("rom_hash\t" .. tostring(try(gameinfo.getromhash)))
     meta:add("movie_length\t" .. tostring(st.length))
     meta:add("started_at_frame\t" .. st.start_frame)
+    if st.cfg.start_state then meta:add("start_state\t" .. st.cfg.start_state) end
+    if #st.states_saved > 0 then meta:add("states_saved\t" .. table.concat(st.states_saved, ", ")) end
     meta:add("ended_at_frame\t" .. emu.framecount())
     meta:add("frames_recorded\t" .. st.rows)
     meta:add("lag_frames\t" .. st.lag_total)
@@ -782,7 +830,11 @@ local function finish(st)
     meta:add("config\t" .. (st.text:gsub("\r", ""):gsub("\n", " | ")))
     meta:close()
     trace(("done, %d frames (%d lag) from frame %d; files in %s"):format(st.rows, st.lag_total, st.start_frame, st.out))
-    if st.start_frame > 0 then trace("WARNING started at frame " .. st.start_frame .. ", not 0 (see the how-to at the top)") end
+    if st.cfg.start_state then
+        trace("started from checkpoint " .. st.cfg.start_state .. " at frame " .. st.start_frame)
+    elseif st.start_frame > 0 then
+        trace("WARNING started at frame " .. st.start_frame .. ", not 0 (see the how-to at the top)")
+    end
     if st.cfg.exit_at_end then try(client.exit) end
 end
 

@@ -58,6 +58,14 @@ return function(mr)
     local d0 = mr.parse_config("out = x")
     check("stop_after defaults to 0 (play to the end)", d0 and d0.stop_after == 0 and #d0.snapshot_ranges == 0)
 
+    -- Checkpoint savestates.
+    local cp = mr.parse_config("out = x\nsave_states = 50000, 0xC350\nstart_state = C:\\st\\state_f0050000.State")
+    check("save_states and start_state parse", cp and cp.save_states[50000] and mr.count_keys(cp.save_states) == 1
+        and cp.start_state == "C:/st/state_f0050000.State")
+    rejects("save_states rejects frame 0", "out = x\nsave_states = 0", "bad save_states frame")
+    rejects("start_state needs a path", "out = x\nstart_state =", "start_state needs")
+    check("no checkpoints by default", d0 and d0.start_state == nil and mr.count_keys(d0.save_states) == 0)
+
     -- watch lines with register logging.
     local pw = mr.parse_watch("0xCC30 0x30")
     check("plain watch logs no registers", pw and pw.start == 0xCC30 and pw.length == 0x30 and pw.registers == false)

@@ -328,8 +328,12 @@ def cmd_summary(args):
                      + (f", {m[f'{prefix}{a}.errors']} errors" if m.get(f"{prefix}{a}.errors", "0") != "0" else "")
                      + ")" for a in keys]
             lines.append(f"  {label} logged {len(e[table])}" + (": " + "; ".join(parts) if parts else ""))
-    if m.get("started_at_frame") not in (None, "0"):
+    if m.get("start_state"):
+        lines.append(f"  started from checkpoint {m['start_state']} at frame {m.get('started_at_frame', '?')}")
+    elif m.get("started_at_frame") not in (None, "0"):
         lines.append(f"  WARNING: recording started at frame {m['started_at_frame']}, not 0")
+    if m.get("states_saved"):
+        lines.append(f"  checkpoints saved: {m['states_saved']}")
     _emit(args, data, lines)
 
 

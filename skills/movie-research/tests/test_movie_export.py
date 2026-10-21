@@ -96,6 +96,14 @@ class Export(unittest.TestCase):
         _, text = run(["summary", f])
         self.assertIn("started at frame 120", text)
 
+    def test_summary_names_checkpoints(self):
+        f = write_export(self.folder("a"), meta={"started_at_frame": "195000", "start_state": "C:/x/state_f0195000.State",
+                                                 "states_saved": "state_f0212000.State"})
+        _, text = run(["summary", f])
+        self.assertIn("started from checkpoint C:/x/state_f0195000.State at frame 195000", text)
+        self.assertIn("checkpoints saved: state_f0212000.State", text)
+        self.assertNotIn("WARNING", text)
+
     def test_writes_filter_and_limit(self):
         ws = [(n, 0xC000 + (n % 2), n, n + 1, "0x0150") for n in range(1, 9)]
         f = write_export(self.folder("a"), writes=ws)
