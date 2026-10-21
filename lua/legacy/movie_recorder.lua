@@ -36,7 +36,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "10"
+M.VERSION = "11"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -569,8 +569,9 @@ local function setup()
     -- value before the first change.
     -- Hit loggers for exec_watch and register-logging watch lines. A hit logs
     -- registers, optional stack words and captured bytes. Callbacks run
-    -- mid-frame, while the frame counter still shows the previous frame, so
-    -- hits are stamped framecount() + 1 to match frames.tsv. Hits past `max`
+    -- mid-frame; on BizHawk 1.11.7 the frame counter already shows the frame
+    -- being emulated there (checked against writes.tsv), so hits are stamped
+    -- framecount() as frames.tsv and writes.tsv are. Hits past `max`
     -- are only counted. The callback never raises: on BizHawk 1.x an error
     -- inside a callback can surface as a modal dialog that blocks the
     -- emulator, so errors are counted and the first one is logged instead.
@@ -592,7 +593,7 @@ local function setup()
                 for a = c.start, c.start + c.length - 1 do b[#b + 1] = memory.readbyte(a) end
                 caps[#caps + 1] = M.hex_bytes(b)
             end
-            file:add(("%d\t0x%04X\t%d\t%s\t%s\t%s"):format(emu.framecount() + 1, addr, stat.hits,
+            file:add(("%d\t0x%04X\t%d\t%s\t%s\t%s"):format(emu.framecount(), addr, stat.hits,
                 M.registers_string(regs), M.hex_bytes(stack), table.concat(caps, " ")))
         end
         return function(addr)
