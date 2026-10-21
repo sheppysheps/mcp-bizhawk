@@ -22,16 +22,20 @@
 --      be off), then unpause. It prints "RECORDING" at the start, a progress
 --      line every progress_every frames, and "done" at the end. Silence means
 --      it isn't running.
+--   4. Every stage (and any error, with its traceback) is also written to
+--      movie_recorder.log next to this script, so a run that stops early can
+--      be diagnosed from the file even when the console shows nothing.
 --
 -- SYSTEM ACCESS (why, and the limits): this file writes files with `io`,
 -- because BizHawk 1.x has no other way to get data out. It only writes inside
--- the configured `out` folder, using fixed file names; it never reads or runs
+-- the configured `out` folder, using fixed file names, plus its own
+-- movie_recorder.log next to the script (stage log); it never reads or runs
 -- other files, never uses `os.execute`, `luanet` or the network, and never
 -- executes its config (the config is parsed as plain `key = value` text).
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "2"
+M.VERSION = "3"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -217,6 +221,29 @@ end
 
 -- ── BizHawk side ──────────────────────────────────────────────────────────
 
+local log_path = nil -- set when running inside BizHawk; nil = console only
+
+--- Report a stage to the Lua Console and append it to movie_recorder.log.
+--- The log is opened, appended and closed per line, so it survives a crash
+--- and shows the last stage reached even when the console shows nothing.
+--- @return nothing.
+--- @requires print; io (appends to log_path only, next to this script).
+local function trace(msg)
+    local line = "movie_recorder: " .. msg
+    print(line)
+    if not log_path then return end
+    local f = io.open(log_path, "a")
+    if f then f:write(line, "\n"); f:close() end
+end
+
+--- xpcall error handler that keeps the stack trace.
+--- @return the error message followed by a traceback (or the bare message).
+--- @requires debug.traceback when available.
+local function traceback(e)
+    if debug and debug.traceback then return debug.traceback(tostring(e), 2) end
+    return tostring(e)
+end
+
 --- Buffered writer for one text file (keeps disk writes rare at high speed).
 --- @return object with :add(line), :flush(), :close().
 --- @requires io (writes only the given path).
@@ -252,54 +279,67 @@ local function script_dir()
     return src:match("^(.*/)") or ""
 end
 
---- Record the playing movie until it ends. Entry point inside BizHawk.
---- @return nothing; writes the files described at the top of this file.
---- @requires BizHawk Lua: emu, movie, memory, client, event, gameinfo; io.
-local function run()
+--- Read one byte from the System Bus.
+--- @return the byte value.
+--- @requires BizHawk memory API with a "System Bus" domain.
+local function read_bus(addr)
+    memory.usememorydomain("System Bus")
+    return memory.readbyte(addr)
+end
+
+--- Read the config, check the movie, open the output files and register the
+--- write-watches. Never yields, so it can run inside xpcall (Lua 5.1 can't
+--- yield across pcall, which is why the frame loop is split out).
+--- @return state table used by step() and finish(); raises on any problem.
+--- @requires BizHawk Lua: emu, movie, memory, client, event; io.
+local function setup()
     local cfg_path = script_dir() .. "movie_recorder.cfg"
+    trace("reading config " .. cfg_path)
     local fh = io.open(cfg_path, "r")
-    if not fh then error("movie_recorder: no config at " .. cfg_path .. " (copy movie_recorder.example.cfg)") end
+    if not fh then error("no config at " .. cfg_path .. " (copy movie_recorder.example.cfg)", 0) end
     local text = fh:read("*a"); fh:close()
     local cfg, err = M.parse_config(text)
-    if not cfg then error("movie_recorder: " .. err) end
+    if not cfg then error("bad config: " .. err, 0) end
+    trace("config ok, out = " .. cfg.out)
 
     local mode = try(movie.mode)
+    trace("movie.mode() = " .. tostring(mode))
     if mode ~= "PLAY" then
-        error("movie_recorder: a movie must be playing in read-only mode (movie.mode() = " .. tostring(mode)
-            .. "). Recording mode would let inputs overwrite the movie.")
+        error("a movie must be playing in read-only mode (movie.mode() = " .. tostring(mode)
+            .. "). Recording mode would let inputs overwrite the movie.", 0)
     end
 
-    local out = cfg.out .. "/"
-    local start_frame = emu.framecount()
-    local frames = buffered(out .. "frames.tsv")
-    local snaps = buffered(out .. "snapshots.tsv")
-    local writes = buffered(out .. "writes.tsv")
-    frames:add("frame\tlag\tinput")
-    snaps:add("frame\tdomain\tfile\tbytes\treason")
-    writes:add("frame\taddress\told\tnew\tpc")
+    local st = {
+        cfg = cfg, text = text, out = cfg.out .. "/", start_frame = emu.framecount(),
+        sizes = {}, shadow = {}, dirty = {}, pending = {}, delays = M.watched_addresses(cfg),
+        lag_total = 0, rows = 0, length = try(movie.length) or -1, reason = "movie ended",
+    }
+    trace("opening output files in " .. st.out)
+    st.frames = buffered(st.out .. "frames.tsv")
+    st.snaps = buffered(st.out .. "snapshots.tsv")
+    st.writes = buffered(st.out .. "writes.tsv")
+    st.frames:add("frame\tlag\tinput")
+    st.snaps:add("frame\tdomain\tfile\tbytes\treason")
+    st.writes:add("frame\taddress\told\tnew\tpc")
 
-    local sizes = {}
+    trace("checking memory domains")
     for _, d in ipairs(cfg.domains) do
-        sizes[d] = try(memory.getmemorydomainsize, d)
-        if not sizes[d] then error("movie_recorder: unknown memory domain '" .. d .. "'") end
+        st.sizes[d] = try(memory.getmemorydomainsize, d)
+        if not st.sizes[d] then error("unknown memory domain '" .. d .. "'", 0) end
     end
 
     -- Write-watches: callbacks only note "written, by this PC"; values are
     -- read once at frame end (some cores report written values as 0).
     -- Starting values are logged as "init" rows, so a timeline knows the
     -- value before the first change.
-    local shadow, dirty, pending = {}, {}, {}
-    local delays = M.watched_addresses(cfg)
-    local function read_bus(addr)
-        memory.usememorydomain("System Bus")
-        return memory.readbyte(addr)
-    end
     local addrs = {}
-    for a in pairs(delays) do addrs[#addrs + 1] = a end
+    for a in pairs(st.delays) do addrs[#addrs + 1] = a end
     table.sort(addrs)
+    trace(("registering %d write-watch(es)"):format(#addrs))
+    local dirty = st.dirty
     for _, a in ipairs(addrs) do
-        shadow[a] = read_bus(a)
-        writes:add(("%d\t0x%04X\t%d\t%d\tinit"):format(start_frame, a, shadow[a], shadow[a]))
+        st.shadow[a] = read_bus(a)
+        st.writes:add(("%d\t0x%04X\t%d\t%d\tinit"):format(st.start_frame, a, st.shadow[a], st.shadow[a]))
         event.onmemorywrite(function()
             dirty[a] = try(emu.getregister, "PC") or -1
         end, a)
@@ -311,88 +351,130 @@ local function run()
         local ok1 = type(client.speedmode) == "function" and pcall(client.speedmode, 6400)
         local ok2 = type(emu.limitframerate) == "function" and pcall(emu.limitframerate, false)
         if not (ok1 or ok2) then
-            print("movie_recorder: WARNING couldn't lift the speed limit from Lua; untick "
+            trace("WARNING couldn't lift the speed limit from Lua; untick "
                 .. "Config > Speed/Skip > Clock Throttle to record faster")
         end
     end
 
-    local lag_total, rows = 0, 0
-    local length = try(movie.length) or -1
-    local reason = "movie ended"
     -- Say loudly that recording started: a script that's listed in the Lua
     -- Console but switched off prints nothing, so silence means "not running".
-    print(("movie_recorder v%s: RECORDING from frame %d of %d to %s"):format(M.VERSION, start_frame, length, out))
-    print(("movie_recorder: %d domain(s) per snapshot, every %d frames + %d listed, %d watched byte(s)%s")
+    trace(("v%s: RECORDING from frame %d of %d to %s"):format(M.VERSION, st.start_frame, st.length, st.out))
+    trace(("%d domain(s) per snapshot, every %d frames + %d listed, %d watched byte(s)%s")
         :format(#cfg.domains, cfg.snapshot_every, M.count_keys(cfg.snapshot_frames), #addrs,
             cfg.screenshots and ", screenshots on" or ""))
-    while true do
-        emu.frameadvance()
-        local frame = emu.framecount()
-        local lag = emu.islagged() and 1 or 0
-        lag_total = lag_total + lag
-        frames:add(("%d\t%d\t%s"):format(frame, lag, M.input_string(try(movie.getinput, frame - 1))))
-        rows = rows + 1
+    return st
+end
 
-        for a, pc in pairs(dirty) do
-            local v = read_bus(a)
-            if v ~= shadow[a] then
-                local pc_text = (pc >= 0) and ("0x%04X"):format(pc % 0x10000) or "?"
-                writes:add(("%d\t0x%04X\t%d\t%d\t%s"):format(frame, a, shadow[a], v, pc_text))
-                shadow[a] = v
-                if delays[a] then pending[frame + delays[a]] = ("change:0x%04X"):format(a) end
-            end
-            dirty[a] = nil
-        end
+--- Record the frame that just ran: input, lag, watched writes, snapshots.
+--- Never yields (called inside xpcall after emu.frameadvance()).
+--- @return true when recording should stop (movie ended or left PLAY mode).
+--- @requires BizHawk Lua: emu, movie, memory, client; io.
+local function step(st)
+    local cfg = st.cfg
+    local frame = emu.framecount()
+    local lag = emu.islagged() and 1 or 0
+    st.lag_total = st.lag_total + lag
+    st.frames:add(("%d\t%d\t%s"):format(frame, lag, M.input_string(try(movie.getinput, frame - 1))))
+    st.rows = st.rows + 1
 
-        local snap_reason = M.snapshot_reason(cfg, frame, pending)
-        pending[frame] = nil
-        if snap_reason then
-            for _, d in ipairs(cfg.domains) do
-                memory.usememorydomain(d)
-                local data = M.bytes_to_string(memory.readbyterange(0, sizes[d]), sizes[d])
-                local name = M.snap_name(frame, d)
-                local f = assert(io.open(out .. name, "wb"))
-                f:write(data); f:close()
-                snaps:add(("%d\t%s\t%s\t%d\t%s"):format(frame, d, name, #data, snap_reason))
-            end
-            if cfg.screenshots then try(client.screenshot, out .. M.snap_name(frame)) end
+    for a, pc in pairs(st.dirty) do
+        local v = read_bus(a)
+        if v ~= st.shadow[a] then
+            local pc_text = (pc >= 0) and ("0x%04X"):format(pc % 0x10000) or "?"
+            st.writes:add(("%d\t0x%04X\t%d\t%d\t%s"):format(frame, a, st.shadow[a], v, pc_text))
+            st.shadow[a] = v
+            if st.delays[a] then st.pending[frame + st.delays[a]] = ("change:0x%04X"):format(a) end
         end
-
-        if rows % cfg.flush_every == 0 then frames:flush(); writes:flush(); snaps:flush() end
-        if cfg.progress_every > 0 and frame % cfg.progress_every == 0 then
-            print(("movie_recorder: frame %d / %d, %d lag frames so far"):format(frame, length, lag_total))
-        end
-        local now = try(movie.mode)
-        if now ~= "PLAY" then reason = "movie mode became " .. tostring(now); break end
-        if length > 0 and frame >= length then break end
+        st.dirty[a] = nil
     end
 
-    frames:close(); writes:close(); snaps:close()
-    local meta = buffered(out .. "run.tsv")
+    local snap_reason = M.snapshot_reason(cfg, frame, st.pending)
+    st.pending[frame] = nil
+    if snap_reason then
+        for _, d in ipairs(cfg.domains) do
+            memory.usememorydomain(d)
+            local data = M.bytes_to_string(memory.readbyterange(0, st.sizes[d]), st.sizes[d])
+            local name = M.snap_name(frame, d)
+            local f = assert(io.open(st.out .. name, "wb"))
+            f:write(data); f:close()
+            st.snaps:add(("%d\t%s\t%s\t%d\t%s"):format(frame, d, name, #data, snap_reason))
+        end
+        if cfg.screenshots then try(client.screenshot, st.out .. M.snap_name(frame)) end
+    end
+
+    if st.rows % cfg.flush_every == 0 then st.frames:flush(); st.writes:flush(); st.snaps:flush() end
+    if cfg.progress_every > 0 and frame % cfg.progress_every == 0 then
+        trace(("frame %d / %d, %d lag frames so far"):format(frame, st.length, st.lag_total))
+    end
+    local now = try(movie.mode)
+    if now ~= "PLAY" then st.reason = "movie mode became " .. tostring(now); return true end
+    return st.length > 0 and frame >= st.length
+end
+
+--- Close the data files and write run.tsv.
+--- @return nothing.
+--- @requires BizHawk Lua: emu, gameinfo, client; io.
+local function finish(st)
+    st.frames:close(); st.writes:close(); st.snaps:close()
+    local meta = buffered(st.out .. "run.tsv")
     meta:add("key\tvalue")
     meta:add("recorder_version\t" .. M.VERSION)
     meta:add("lua\t" .. tostring(_VERSION))
     meta:add("rom_name\t" .. tostring(try(gameinfo.getromname)))
     meta:add("rom_hash\t" .. tostring(try(gameinfo.getromhash)))
-    meta:add("movie_length\t" .. tostring(length))
-    meta:add("started_at_frame\t" .. start_frame)
+    meta:add("movie_length\t" .. tostring(st.length))
+    meta:add("started_at_frame\t" .. st.start_frame)
     meta:add("ended_at_frame\t" .. emu.framecount())
-    meta:add("frames_recorded\t" .. rows)
-    meta:add("lag_frames\t" .. lag_total)
-    meta:add("end_reason\t" .. reason)
-    for d, n in pairs(sizes) do meta:add("domain_size." .. d .. "\t" .. n) end
-    meta:add("config\t" .. (text:gsub("\r", ""):gsub("\n", " | ")))
+    meta:add("frames_recorded\t" .. st.rows)
+    meta:add("lag_frames\t" .. st.lag_total)
+    meta:add("end_reason\t" .. st.reason)
+    for d, n in pairs(st.sizes) do meta:add("domain_size." .. d .. "\t" .. n) end
+    meta:add("config\t" .. (st.text:gsub("\r", ""):gsub("\n", " | ")))
     meta:close()
-    print(("movie_recorder: done, %d frames (%d lag) from frame %d; files in %s"):format(rows, lag_total, start_frame, out))
-    if start_frame > 0 then print("movie_recorder: WARNING started at frame " .. start_frame .. ", not 0 (see the how-to at the top)") end
-    if cfg.exit_at_end then try(client.exit) end
+    trace(("done, %d frames (%d lag) from frame %d; files in %s"):format(st.rows, st.lag_total, st.start_frame, st.out))
+    if st.start_frame > 0 then trace("WARNING started at frame " .. st.start_frame .. ", not 0 (see the how-to at the top)") end
+    if st.cfg.exit_at_end then try(client.exit) end
+end
+
+--- Record the playing movie until it ends. Entry point inside BizHawk.
+--- Each stage runs under xpcall so a failure is logged with its traceback;
+--- emu.frameadvance() stays outside xpcall because Lua 5.1 can't yield
+--- across it. After a failure in the loop the data so far is still saved.
+--- @return nothing; writes the files described at the top of this file.
+--- @requires BizHawk Lua (see setup, step, finish).
+local function run()
+    local ok, st = xpcall(setup, traceback)
+    if not ok then trace("FAILED during setup: " .. tostring(st)); return end
+    trace("entering the frame loop (unpause if paused)")
+    local first = true
+    while true do
+        emu.frameadvance()
+        if first then trace("first frame advanced, now at frame " .. tostring(emu.framecount())); first = false end
+        local ok2, done = xpcall(function() return step(st) end, traceback)
+        if not ok2 then
+            st.reason = "error: " .. tostring(done)
+            trace("FAILED at frame " .. tostring(emu.framecount()) .. ": " .. tostring(done))
+            break
+        end
+        if done then break end
+    end
+    local ok3, err = xpcall(function() finish(st) end, traceback)
+    if not ok3 then trace("FAILED while finishing: " .. tostring(err)) end
 end
 
 -- Opened as a script inside BizHawk: record. Loaded with require() (tests,
 -- in or out of BizHawk), `...` holds the module name: return the helpers only.
+-- Only that exact name counts, since a BizHawk build may pass other values.
 local required_as = ...
-if required_as == nil and emu ~= nil and memory ~= nil and movie ~= nil then
+if required_as ~= "movie_recorder" and emu ~= nil and memory ~= nil and movie ~= nil then
+    log_path = script_dir() .. "movie_recorder.log"
+    local f = io.open(log_path, "w")
+    if f then f:close() else log_path = nil end
+    trace(("v%s started (%s); log file: %s; '...' = %s"):format(
+        M.VERSION, tostring(_VERSION), tostring(log_path), tostring(required_as)))
     run()
 else
+    if emu ~= nil then print("movie_recorder: loaded as a module ('...' = " .. tostring(required_as) .. "), not recording") end
     return M
 end
+
