@@ -35,7 +35,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "6"
+M.VERSION = "7"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -64,7 +64,9 @@ end
 --- bytes AND snapshot `delay` frames after any of them changes, default 30,
 --- e.g. a "current room" variable, so each room gets a picture once drawn),
 --- max_watch_bytes, turbo, exit_at_end, flush_every, progress_every (print a
---- progress line to the Lua Console every N frames; 0 = off).
+--- progress line to the Lua Console every N frames; 0 = off), heartbeat_every
+--- (write a line to movie_recorder.log only, every N frames, to locate a hang;
+--- 0 = off), trace_snapshots (log each snapshot step; default true).
 --- @return config table, or nil + error message (with the line number).
 --- @requires Nothing.
 function M.parse_config(text)
@@ -72,6 +74,7 @@ function M.parse_config(text)
         out = nil, domains = {}, snapshot_every = 0, snapshot_frames = {},
         screenshots = true, watch = {}, on_change = {}, max_watch_bytes = 4096,
         turbo = true, exit_at_end = false, flush_every = 600, progress_every = 10000,
+        heartbeat_every = 0, trace_snapshots = true,
     }
     local function bool(v, line)
         v = v:lower()
@@ -117,11 +120,12 @@ function M.parse_config(text)
                     end
                     cfg.on_change[#cfg.on_change + 1] = { start = start, length = len, delay = delay }
                 elseif key == "snapshot_every" or key == "max_watch_bytes" or key == "flush_every"
-                    or key == "progress_every" then
+                    or key == "progress_every" or key == "heartbeat_every" then
                     local n = M.parse_int(value)
                     if not n then error("line " .. line .. ": " .. key .. " needs a whole number", 0) end
                     cfg[key] = n
-                elseif key == "screenshots" or key == "turbo" or key == "exit_at_end" then
+                elseif key == "screenshots" or key == "turbo" or key == "exit_at_end"
+                    or key == "trace_snapshots" then
                     cfg[key] = bool(value, line)
                 else
                     error("line " .. line .. ": unknown key '" .. key .. "'", 0)
@@ -259,11 +263,12 @@ local log_path = nil -- set when running inside BizHawk; nil = console only
 --- Report a stage to the Lua Console and append it to movie_recorder.log.
 --- The log is opened, appended and closed per line, so it survives a crash
 --- and shows the last stage reached even when the console shows nothing.
+--- With `quiet`, it skips the console (for frequent lines like heartbeats).
 --- @return nothing.
 --- @requires print; io (appends to log_path only, next to this script).
-local function trace(msg)
+local function trace(msg, quiet)
     local line = "movie_recorder: " .. msg
-    print(line)
+    if not quiet then print(line) end
     if not log_path then return end
     local f = io.open(log_path, "a")
     if f then f:write(line, "\n"); f:close() end
@@ -492,15 +497,27 @@ local function step(st)
     local snap_reason = M.snapshot_reason(cfg, frame, st.pending)
     st.pending[frame] = nil
     if snap_reason then
+        -- Flush first and log each step, so a hang inside a snapshot leaves
+        -- complete data files and names the call it stopped in.
+        local tr = cfg.trace_snapshots
+        st.frames:flush(); st.writes:flush(); st.snaps:flush()
+        if tr then trace(("snapshot f%d (%s): start"):format(frame, snap_reason), true) end
         for _, d in ipairs(cfg.domains) do
-            memory.usememorydomain(d)
+            if tr then trace(("snapshot f%d: reading %s"):format(frame, d), true) end
             local data = read_domain(st, d)
             local name = M.snap_name(frame, d)
             local f = assert(io.open(st.out .. name, "wb"))
             f:write(data); f:close()
             st.snaps:add(("%d\t%s\t%s\t%d\t%s"):format(frame, d, name, #data, snap_reason))
         end
-        if cfg.screenshots then try(client.screenshot, st.out .. M.snap_name(frame)) end
+        if cfg.screenshots then
+            if tr then trace(("snapshot f%d: screenshot"):format(frame), true) end
+            try(client.screenshot, st.out .. M.snap_name(frame))
+        end
+        if tr then trace(("snapshot f%d: done"):format(frame), true) end
+    end
+    if cfg.heartbeat_every > 0 and frame % cfg.heartbeat_every == 0 then
+        trace(("heartbeat frame %d, lag %d"):format(frame, st.lag_total), true)
     end
 
     if st.rows % cfg.flush_every == 0 then st.frames:flush(); st.writes:flush(); st.snaps:flush() end

@@ -13,6 +13,12 @@ return function(mr)
         check(name, cfg == nil and tostring(err):find(expect, 1, true) ~= nil, tostring(err))
     end
 
+    -- Diagnostics keys.
+    local diag = mr.parse_config("out = x\nheartbeat_every = 25\ntrace_snapshots = no")
+    check("diagnostics keys parse", diag and diag.heartbeat_every == 25 and diag.trace_snapshots == false)
+    local defaults = mr.parse_config("out = x")
+    check("diagnostics defaults", defaults and defaults.heartbeat_every == 0 and defaults.trace_snapshots == true)
+
     -- Numbers.
     check("parse decimal", mr.parse_int(" 146 ") == 146)
     check("parse hex", mr.parse_int("0xC000") == 0xC000)
