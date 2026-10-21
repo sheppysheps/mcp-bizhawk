@@ -10,7 +10,9 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
   timeline <export> --address A      segments by a watched variable, e.g. the current
                                      room, with a snapshot frame for each
   execs    <export> [--group HL,DE]  exec-watch hits: registers each time a watched
-                                     address ran, raw or grouped by distinct values
+                                     address ran, raw or grouped by distinct values;
+                                     --writes: registers at each write to a watch
+                                     line with 'registers'
   compare  <a> <b>                   first frame where two recordings of the same
                                      movie differ: input, lag, or memory snapshot
 
@@ -60,12 +62,15 @@ def load(folder):
              for r in read_tsv(os.path.join(folder, "snapshots.tsv"))]
     writes = [{"frame": int(r["frame"]), "address": r["address"], "old": int(r["old"]), "new": int(r["new"]),
                "pc": r["pc"]} for r in read_tsv(os.path.join(folder, "writes.tsv"))]
-    # execs.tsv exists from recorder version 9 on, only when exec_watch is set.
-    execs = [{"frame": int(r["frame"]), "address": r["address"], "hit": int(r["hit"]),
-              "registers": parse_registers(r["registers"]), "stack": r.get("stack") or "",
-              "capture": (r.get("capture") or "").split()}
-             for r in read_tsv(os.path.join(folder, "execs.tsv"))]
-    return {"folder": folder, "meta": meta, "frames": frames, "snapshots": snaps, "writes": writes, "execs": execs}
+    # execs.tsv (recorder 9+, exec_watch) and write_hits.tsv (recorder 10+,
+    # watch lines with registers) share one format: a hit with registers.
+    def hits(name):
+        return [{"frame": int(r["frame"]), "address": r["address"], "hit": int(r["hit"]),
+                 "registers": parse_registers(r["registers"]), "stack": r.get("stack") or "",
+                 "capture": (r.get("capture") or "").split()}
+                for r in read_tsv(os.path.join(folder, name))]
+    return {"folder": folder, "meta": meta, "frames": frames, "snapshots": snaps, "writes": writes,
+            "execs": hits("execs.tsv"), "write_hits": hits("write_hits.tsv")}
 
 
 def parse_registers(text):
@@ -306,13 +311,14 @@ def cmd_summary(args):
              f"  lag frames {lag} ({100.0 * lag / max(1, len(fr)):.2f}%); longest runs: "
              + (", ".join(f"{n} at {f}" for f, n in runs) or "none"),
              f"  snapshots {len(e['snapshots'])} files at {data['snapshot_frames']} frames; watched writes {len(e['writes'])}"]
-    exec_keys = sorted(k[len("exec."):-len(".hits")] for k in m if k.startswith("exec.") and k.endswith(".hits"))
-    if exec_keys or e["execs"]:
-        data["execs"] = len(e["execs"])
-        parts = [f"{a} {m.get(f'exec.{a}.hits', '?')} hits ({m.get(f'exec.{a}.logged', '?')} logged"
-                 + (f", {m[f'exec.{a}.errors']} errors" if m.get(f"exec.{a}.errors", "0") != "0" else "") + ")"
-                 for a in exec_keys]
-        lines.append(f"  exec hits logged {len(e['execs'])}" + (": " + "; ".join(parts) if parts else ""))
+    for prefix, table, label in (("exec.", "execs", "exec hits"), ("write_hits.", "write_hits", "write hits")):
+        keys = sorted(k[len(prefix):-len(".hits")] for k in m if k.startswith(prefix) and k.endswith(".hits"))
+        if keys or e[table]:
+            data[table] = len(e[table])
+            parts = [f"{a} {m.get(f'{prefix}{a}.hits', '?')} hits ({m.get(f'{prefix}{a}.logged', '?')} logged"
+                     + (f", {m[f'{prefix}{a}.errors']} errors" if m.get(f"{prefix}{a}.errors", "0") != "0" else "")
+                     + ")" for a in keys]
+            lines.append(f"  {label} logged {len(e[table])}" + (": " + "; ".join(parts) if parts else ""))
     if m.get("started_at_frame") not in (None, "0"):
         lines.append(f"  WARNING: recording started at frame {m['started_at_frame']}, not 0")
     _emit(args, data, lines)
@@ -326,13 +332,16 @@ def _fmt(value):
 
 
 def cmd_execs(args):
-    """Exec-watch hits, raw or grouped by register/stack/capture values. Returns: None."""
+    """Exec-watch hits (or, with --writes, register-logging watch hits), raw or
+    grouped by register/stack/capture values. Returns: None."""
     e = load(args.export)
+    table, source = ("write_hits", "write_hits.tsv: add 'registers' to a watch line") if args.writes \
+        else ("execs", "execs.tsv: set exec_watch")
     want = None if args.address is None else int(args.address, 0)
-    hits = [h for h in e["execs"] if (want is None or int(h["address"], 16) == want)
+    hits = [h for h in e[table] if (want is None or int(h["address"], 16) == want)
             and args.start <= h["frame"] <= args.end]
     if not hits:
-        _emit(args, [], ["no matching exec hits" + ("" if e["execs"] else " (no execs.tsv: set exec_watch)")])
+        _emit(args, [], ["no matching hits" + ("" if e[table] else f" (no {source})")])
         return
     if args.group:
         fields = [f.strip() for f in args.group.split(",") if f.strip()]
@@ -479,6 +488,8 @@ def main(argv=None):
 
     x = sub.add_parser("execs", help="exec-watch hits (registers when an address ran), raw or grouped")
     x.add_argument("export")
+    x.add_argument("--writes", action="store_true",
+                   help="read write_hits.tsv instead: registers at each write to a 'watch ... registers' range")
     x.add_argument("--address", help="one watched address, e.g. 0x6BF6")
     x.add_argument("--group", help="comma list of fields to group by: registers (A, PC), pairs (HL, DE), "
                                    "stackN (Nth word at SP), capN (Nth captured range)")

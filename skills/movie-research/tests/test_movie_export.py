@@ -17,20 +17,23 @@ sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 import movie_export  # noqa: E402
 
 
-def write_export(folder, lag_frames=(), inputs=None, snapshots=None, writes=(), frames=10, meta=None, execs=None):
+def write_export(folder, lag_frames=(), inputs=None, snapshots=None, writes=(), frames=10, meta=None, execs=None,
+                 write_hits=None):
     """Create a fake movie_recorder export folder.
 
     lag_frames: frames flagged as lag. inputs: {frame: "A|Start"}.
     snapshots: {(frame, domain): bytes}. writes: (frame, addr, old, new, pc) tuples.
     execs: (frame, addr, hit, registers text, stack hex, capture text) tuples;
-    None writes no execs.tsv (as when no exec_watch is set).
+    None writes no execs.tsv (as when no exec_watch is set). write_hits: the
+    same tuples for write_hits.tsv.
     Returns: the folder path.
     """
-    if execs is not None:
-        with open(os.path.join(folder, "execs.tsv"), "w", encoding="utf-8") as f:
-            f.write("frame\taddress\thit\tregisters\tstack\tcapture\n")
-            for x in execs:
-                f.write("%d\t0x%04X\t%d\t%s\t%s\t%s\n" % x)
+    for name, rows in (("execs.tsv", execs), ("write_hits.tsv", write_hits)):
+        if rows is not None:
+            with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+                f.write("frame\taddress\thit\tregisters\tstack\tcapture\n")
+                for x in rows:
+                    f.write("%d\t0x%04X\t%d\t%s\t%s\t%s\n" % x)
     inputs = inputs or {}
     with open(os.path.join(folder, "frames.tsv"), "w", encoding="utf-8") as f:
         f.write("frame\tlag\tinput\n")
@@ -198,6 +201,22 @@ class Export(unittest.TestCase):
         self.assertIn("3 more", raw)
         _, summary = run(["summary", f])
         self.assertIn("exec hits logged 4: 0x6BF6 3 hits (3 logged)", summary)
+
+    def test_write_hits_find_the_copy_source(self):
+        # A copy loop writing a 2-byte record: HL walks the source, DE the destination.
+        wh = [(7, 0xCC30, 1, "D=0xCC E=0x30 H=0x62 L=0x42 PC=0x6BF6", "", ""),
+              (7, 0xCC31, 2, "D=0xCC E=0x31 H=0x62 L=0x43 PC=0x6BF6", "", ""),
+              (9, 0xCC30, 3, "D=0xCC E=0x30 H=0x56 L=0x32 PC=0x6BF6", "", "")]
+        f = write_export(self.folder("a"), write_hits=wh,
+                         meta={"started_at_frame": "0", "write_hits.0xCC30.hits": "3",
+                               "write_hits.0xCC30.logged": "3", "write_hits.0xCC30.errors": "0"})
+        _, text = run(["execs", f, "--writes", "--address", "0xCC30", "--group", "HL,DE"])
+        self.assertIn("2 hits, 2 distinct (HL, DE)", text)
+        self.assertIn("HL=0x6242  DE=0xCC30  x1  frames 7-7", text)
+        _, summary = run(["summary", f])
+        self.assertIn("write hits logged 3: 0xCC30 3 hits (3 logged)", summary)
+        _, none = run(["execs", f])
+        self.assertIn("no execs.tsv", none)
 
     def test_execs_without_execs_file(self):
         f = write_export(self.folder("a"))

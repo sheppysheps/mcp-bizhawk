@@ -36,7 +36,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "9"
+M.VERSION = "10"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -108,12 +108,9 @@ function M.parse_config(text)
                         cfg.snapshot_frames[n] = true
                     end
                 elseif key == "watch" then
-                    local a, b = value:match("^(%S+)%s+(%S+)$")
-                    local start, len = a and M.parse_int(a), b and M.parse_int(b)
-                    if not start or not len or len < 1 then
-                        error("line " .. line .. ": watch needs '<start> <length>', e.g. 0xC000 0x100", 0)
-                    end
-                    cfg.watch[#cfg.watch + 1] = { start = start, length = len }
+                    local w, werr = M.parse_watch(value)
+                    if not w then error("line " .. line .. ": " .. werr, 0) end
+                    cfg.watch[#cfg.watch + 1] = w
                 elseif key == "snapshot_on_change" then
                     local a, b, c = value:match("^(%S+)%s+(%S+)%s*(%S*)$")
                     local start, len = a and M.parse_int(a), b and M.parse_int(b)
@@ -163,47 +160,91 @@ M.EXEC_MAX_STACK = 16      -- stack words per hit
 M.EXEC_MAX_CAPTURE = 64    -- captured bytes per range
 M.EXEC_DEFAULT_MAX = 1000  -- hits logged per address (the rest are counted)
 
---- Parse one exec_watch value: "<address> [stack <words>] [capture <start>
---- <length>]... [max <hits>]". `stack` reads that many 2-byte words at the SP
---- register (the return addresses, i.e. who called the routine); `capture`
---- reads System Bus bytes (e.g. a game's "current ROM bank" variable); `max`
---- caps logged hits for this address (default EXEC_DEFAULT_MAX).
---- @return table {address, stack, captures = {{start, length}...}, max}, or nil + error text.
+--- Parse the hit options shared by exec_watch and register-logging watch
+--- lines, starting at words[i]: "registers" (a flag, watch only), "stack
+--- <words>", "capture <start> <length>" (repeatable), "max <hits>". `stack`
+--- reads that many 2-byte words at the SP register (the return addresses, i.e.
+--- who called the code); `capture` reads System Bus bytes (e.g. a game's
+--- "current ROM bank" variable); `max` caps logged hits (default EXEC_DEFAULT_MAX).
+--- @return options table {stack, captures = {{start, length}...}, max, any}
+---         (`any` is true when an option was given), or nil + error text.
 --- @requires Nothing.
-function M.parse_exec_watch(value)
-    local words = {}
-    for w in value:gmatch("%S+") do words[#words + 1] = w end
-    local addr = words[1] and M.parse_int(words[1])
-    if not addr then
-        return nil, "exec_watch needs '<address> [stack <words>] [capture <start> <length>] [max <hits>]'"
-    end
-    local w = { address = addr, stack = 0, captures = {}, max = M.EXEC_DEFAULT_MAX }
-    local i = 2
+function M.parse_hit_options(words, i, what, allow_registers)
+    local o = { stack = 0, captures = {}, max = M.EXEC_DEFAULT_MAX, any = false }
     while i <= #words do
         local opt = words[i]:lower()
-        if opt == "stack" then
+        if opt == "registers" and allow_registers then
+            i = i + 1
+        elseif opt == "stack" then
             local n = words[i + 1] and M.parse_int(words[i + 1])
             if not n or n > M.EXEC_MAX_STACK then
-                return nil, ("exec_watch: stack needs a word count 0..%d"):format(M.EXEC_MAX_STACK)
+                return nil, ("%s: stack needs a word count 0..%d"):format(what, M.EXEC_MAX_STACK)
             end
-            w.stack, i = n, i + 2
+            o.stack, i = n, i + 2
         elseif opt == "capture" then
             local s = words[i + 1] and M.parse_int(words[i + 1])
             local n = words[i + 2] and M.parse_int(words[i + 2])
             if not s or not n or n < 1 or n > M.EXEC_MAX_CAPTURE then
-                return nil, ("exec_watch: capture needs '<start> <length>' with length 1..%d"):format(M.EXEC_MAX_CAPTURE)
+                return nil, ("%s: capture needs '<start> <length>' with length 1..%d"):format(what, M.EXEC_MAX_CAPTURE)
             end
-            w.captures[#w.captures + 1] = { start = s, length = n }
+            o.captures[#o.captures + 1] = { start = s, length = n }
             i = i + 3
         elseif opt == "max" then
             local n = words[i + 1] and M.parse_int(words[i + 1])
-            if not n or n < 1 then return nil, "exec_watch: max needs a whole number of hits >= 1" end
-            w.max, i = n, i + 2
+            if not n or n < 1 then return nil, what .. ": max needs a whole number of hits >= 1" end
+            o.max, i = n, i + 2
         else
-            return nil, "exec_watch: unknown option '" .. words[i] .. "' (expected stack, capture or max)"
+            return nil, ("%s: unknown option '%s' (expected %sstack, capture or max)"):format(
+                what, words[i], allow_registers and "registers, " or "")
         end
+        o.any = true
     end
-    return w
+    return o
+end
+
+--- Split a config value into words.
+--- @return list of the space-separated words.
+--- @requires Nothing.
+local function split_words(value)
+    local words = {}
+    for w in value:gmatch("%S+") do words[#words + 1] = w end
+    return words
+end
+
+--- Parse one exec_watch value: "<address> [stack <words>] [capture <start>
+--- <length>]... [max <hits>]" (options as in M.parse_hit_options).
+--- @return table {address, stack, captures, max}, or nil + error text.
+--- @requires Nothing.
+function M.parse_exec_watch(value)
+    local words = split_words(value)
+    local addr = words[1] and M.parse_int(words[1])
+    if not addr then
+        return nil, "exec_watch needs '<address> [stack <words>] [capture <start> <length>] [max <hits>]'"
+    end
+    local o, err = M.parse_hit_options(words, 2, "exec_watch", false)
+    if not o then return nil, err end
+    o.address = addr
+    return o
+end
+
+--- Parse one watch value: "<start> <length> [registers] [stack <words>]
+--- [capture <start> <length>]... [max <hits>]". With any option, every write
+--- to the range is also logged with the registers at that moment (to
+--- write_hits.tsv), not only value changes: the registers of the code doing
+--- a copy show where it copies from.
+--- @return table {start, length, registers, stack, captures, max}, or nil + error text.
+--- @requires Nothing.
+function M.parse_watch(value)
+    local words = split_words(value)
+    local start, len = words[1] and M.parse_int(words[1]), words[2] and M.parse_int(words[2])
+    if not start or not len or len < 1 then
+        return nil, "watch needs '<start> <length> [registers] [stack <words>] [capture <start> <length>] "
+            .. "[max <hits>]', e.g. 0xC000 0x100"
+    end
+    local o, err = M.parse_hit_options(words, 3, "watch", true)
+    if not o then return nil, err end
+    o.start, o.length, o.registers = start, len, o.any
+    return o
 end
 
 --- Format a register table ({A = 18, PC = 24566, ...}) as text.
@@ -526,6 +567,60 @@ local function setup()
     -- read once at frame end (some cores report written values as 0).
     -- Starting values are logged as "init" rows, so a timeline knows the
     -- value before the first change.
+    -- Hit loggers for exec_watch and register-logging watch lines. A hit logs
+    -- registers, optional stack words and captured bytes. Callbacks run
+    -- mid-frame, while the frame counter still shows the previous frame, so
+    -- hits are stamped framecount() + 1 to match frames.tsv. Hits past `max`
+    -- are only counted. The callback never raises: on BizHawk 1.x an error
+    -- inside a callback can surface as a modal dialog that blocks the
+    -- emulator, so errors are counted and the first one is logged instead.
+    st.hit_stats = {}
+    local function hit_logger(file, kind, label, o)
+        local stat = { hits = 0, logged = 0, errors = 0 }
+        st.hit_stats[#st.hit_stats + 1] = { kind = kind, label = label, stat = stat }
+        local function record(addr)
+            local regs = try(emu.getregisters)
+            memory.usememorydomain("System Bus")
+            local stack = {}
+            local sp = type(regs) == "table" and regs.SP or nil
+            if o.stack > 0 and type(sp) == "number" then
+                for i = 0, 2 * o.stack - 1 do stack[#stack + 1] = memory.readbyte(sp + i) end
+            end
+            local caps = {}
+            for _, c in ipairs(o.captures) do
+                local b = {}
+                for a = c.start, c.start + c.length - 1 do b[#b + 1] = memory.readbyte(a) end
+                caps[#caps + 1] = M.hex_bytes(b)
+            end
+            file:add(("%d\t0x%04X\t%d\t%s\t%s\t%s"):format(emu.framecount() + 1, addr, stat.hits,
+                M.registers_string(regs), M.hex_bytes(stack), table.concat(caps, " ")))
+        end
+        return function(addr)
+            stat.hits = stat.hits + 1
+            if stat.logged >= o.max then return end
+            stat.logged = stat.logged + 1
+            local fine, rec_err = pcall(record, addr)
+            if not fine then
+                stat.errors = stat.errors + 1
+                if stat.errors == 1 then trace(("%s %s: %s"):format(kind, label, tostring(rec_err)), true) end
+            end
+        end
+    end
+    local HIT_HEADER = "frame\taddress\thit\tregisters\tstack\tcapture"
+
+    -- Register-logging watch lines: one logger per line, shared by its bytes.
+    local wlog = {}
+    for _, w in ipairs(cfg.watch) do
+        if w.registers then
+            if not st.write_hits then
+                st.write_hits = buffered(st.out .. "write_hits.tsv")
+                st.write_hits:add(HIT_HEADER)
+            end
+            local log = hit_logger(st.write_hits, "watch", ("0x%04X"):format(w.start), w)
+            for a = w.start, w.start + w.length - 1 do wlog[a] = log end
+        end
+    end
+
     local addrs = {}
     for a in pairs(st.delays) do addrs[#addrs + 1] = a end
     table.sort(addrs)
@@ -534,58 +629,26 @@ local function setup()
     for _, a in ipairs(addrs) do
         st.shadow[a] = read_bus(a)
         st.writes:add(("%d\t0x%04X\t%d\t%d\tinit"):format(st.start_frame, a, st.shadow[a], st.shadow[a]))
+        local log = wlog[a]
         event.onmemorywrite(function()
             dirty[a] = try(emu.getregister, "PC") or -1
+            if log then log(a) end
         end, a)
     end
 
-    -- Exec-watches: log registers (plus optional stack words and captured
-    -- bytes) whenever an address executes. Callbacks run mid-frame, while the
-    -- frame counter still shows the previous frame, so hits are stamped
-    -- framecount() + 1 to match frames.tsv. Hits past `max` are only counted.
-    -- The callback never raises: on BizHawk 1.x an error inside a callback can
-    -- surface as a modal dialog that blocks the emulator, so errors are counted
-    -- and the first one is logged instead.
-    st.exec_stats = {}
+    -- Exec-watches: the same hit logger, on execution of an address.
     if #cfg.exec > 0 then
         if not callable(event.onmemoryexecute) then
             error("this BizHawk build has no event.onmemoryexecute; remove the exec_watch lines", 0)
         end
         st.execs = buffered(st.out .. "execs.tsv")
-        st.execs:add("frame\taddress\thit\tregisters\tstack\tcapture")
+        st.execs:add(HIT_HEADER)
         trace(("registering %d exec-watch(es)"):format(#cfg.exec))
-        local execs = st.execs
         for _, w in ipairs(cfg.exec) do
-            local stat = { hits = 0, logged = 0, errors = 0 }
-            st.exec_stats[#st.exec_stats + 1] = { address = w.address, stat = stat }
-            local function record()
-                local regs = try(emu.getregisters)
-                memory.usememorydomain("System Bus")
-                local stack = {}
-                local sp = type(regs) == "table" and regs.SP or nil
-                if w.stack > 0 and type(sp) == "number" then
-                    for i = 0, 2 * w.stack - 1 do stack[#stack + 1] = memory.readbyte(sp + i) end
-                end
-                local caps = {}
-                for _, c in ipairs(w.captures) do
-                    local b = {}
-                    for a = c.start, c.start + c.length - 1 do b[#b + 1] = memory.readbyte(a) end
-                    caps[#caps + 1] = M.hex_bytes(b)
-                end
-                execs:add(("%d\t0x%04X\t%d\t%s\t%s\t%s"):format(emu.framecount() + 1, w.address, stat.hits,
-                    M.registers_string(regs), M.hex_bytes(stack), table.concat(caps, " ")))
-            end
-            local reg_ok, reg_err = pcall(event.onmemoryexecute, function()
-                stat.hits = stat.hits + 1
-                if stat.logged >= w.max then return end
-                stat.logged = stat.logged + 1
-                local fine, rec_err = pcall(record)
-                if not fine then
-                    stat.errors = stat.errors + 1
-                    if stat.errors == 1 then trace(("exec_watch 0x%04X: %s"):format(w.address, tostring(rec_err)), true) end
-                end
-            end, w.address)
-            if not reg_ok then error(("can't watch execution of 0x%04X: %s"):format(w.address, tostring(reg_err)), 0) end
+            local log = hit_logger(st.execs, "exec_watch", ("0x%04X"):format(w.address), w)
+            local addr = w.address
+            local reg_ok, reg_err = pcall(event.onmemoryexecute, function() log(addr) end, addr)
+            if not reg_ok then error(("can't watch execution of 0x%04X: %s"):format(addr, tostring(reg_err)), 0) end
         end
     end
 
@@ -641,6 +704,7 @@ local function step(st)
         local tr = cfg.trace_snapshots
         st.frames:flush(); st.writes:flush(); st.snaps:flush()
         if st.execs then st.execs:flush() end
+        if st.write_hits then st.write_hits:flush() end
         if tr then trace(("snapshot f%d (%s): start"):format(frame, snap_reason), true) end
         for _, d in ipairs(cfg.domains) do
             if tr then trace(("snapshot f%d: reading %s"):format(frame, d), true) end
@@ -663,6 +727,7 @@ local function step(st)
     if st.rows % cfg.flush_every == 0 then
         st.frames:flush(); st.writes:flush(); st.snaps:flush()
         if st.execs then st.execs:flush() end
+        if st.write_hits then st.write_hits:flush() end
     end
     if cfg.progress_every > 0 and frame % cfg.progress_every == 0 then
         trace(("frame %d / %d, %d lag frames so far"):format(frame, st.length, st.lag_total))
@@ -678,6 +743,7 @@ end
 local function finish(st)
     st.frames:close(); st.writes:close(); st.snaps:close()
     if st.execs then st.execs:close() end
+    if st.write_hits then st.write_hits:close() end
     local meta = buffered(st.out .. "run.tsv")
     meta:add("key\tvalue")
     meta:add("recorder_version\t" .. M.VERSION)
@@ -690,8 +756,8 @@ local function finish(st)
     meta:add("frames_recorded\t" .. st.rows)
     meta:add("lag_frames\t" .. st.lag_total)
     meta:add("end_reason\t" .. st.reason)
-    for _, e in ipairs(st.exec_stats) do
-        local key = ("exec.0x%04X."):format(e.address)
+    for _, e in ipairs(st.hit_stats) do
+        local key = (e.kind == "watch" and "write_hits." or "exec.") .. e.label .. "."
         meta:add(key .. "hits\t" .. e.stat.hits)
         meta:add(key .. "logged\t" .. e.stat.logged)
         meta:add(key .. "errors\t" .. e.stat.errors)

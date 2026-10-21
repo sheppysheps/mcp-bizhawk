@@ -43,6 +43,21 @@ return function(mr)
         and mr.registers_string({}) == "?" and mr.registers_string(nil) == "?")
     check("hex_bytes", mr.hex_bytes({ 10, 27, 255, 256 }) == "0A1BFF00" and mr.hex_bytes({}) == "")
 
+    -- watch lines with register logging.
+    local pw = mr.parse_watch("0xCC30 0x30")
+    check("plain watch logs no registers", pw and pw.start == 0xCC30 and pw.length == 0x30 and pw.registers == false)
+    local rw = mr.parse_watch("0xCC30 0x30 registers")
+    check("watch ... registers enables register logging", rw and rw.registers == true and rw.stack == 0)
+    local ow = mr.parse_watch("0xC3EF 3 stack 2 capture 0xFF80 4 max 300")
+    check("hit options imply registers", ow and ow.registers == true and ow.stack == 2 and ow.max == 300
+        and #ow.captures == 1)
+    local bw, berr = mr.parse_watch("0xC000 4 bogus")
+    check("watch rejects unknown options", bw == nil and tostring(berr):find("unknown option 'bogus'", 1, true) ~= nil, berr)
+    local xw, xerr = mr.parse_exec_watch("0x100 registers")
+    check("exec_watch doesn't take 'registers' (it always logs them)", xw == nil and tostring(xerr):find("unknown option", 1, true) ~= nil, xerr)
+    local wcfg = mr.parse_config("out = x\nwatch = 0xCC30 0x30 registers stack 2")
+    check("config keeps watch hit options", wcfg and wcfg.watch[1].registers and wcfg.watch[1].stack == 2)
+
     -- Numbers.
     check("parse decimal", mr.parse_int(" 146 ") == 146)
     check("parse hex", mr.parse_int("0xC000") == 0xC000)
