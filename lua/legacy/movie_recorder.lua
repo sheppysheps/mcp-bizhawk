@@ -35,7 +35,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "5"
+M.VERSION = "6"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -204,9 +204,9 @@ function M.snap_name(frame, domain)
     return ("shot_f%07d.png"):format(frame)
 end
 
---- Detect the shape of a readbyterange(0, n) result. BizHawk 2.x returns
---- numbers keyed from 0 (or 1); BizHawk 1.x returns hex strings for both
---- keys and values, e.g. t["1F"] = "A0".
+--- Detect the shape of a readbyterange(0, n) result. BizHawk 2.x and 1.11.7
+--- return numbers keyed from 0 (or 1); some older builds are documented as
+--- returning hex strings for both keys and values, e.g. t["1F"] = "A0".
 --- @return "zero", "one" or "hex", or nil when the shape is unknown (e.g. empty).
 --- @requires Nothing.
 function M.range_style(t)
@@ -322,6 +322,19 @@ local function movie_mode()
     return tostring(r):upper()
 end
 
+--- Read a whole memory domain as a byte string. Reads `read_len[d]` bytes
+--- with readbyterange and, when that is one short of the domain (builds
+--- that refuse any range reaching the domain end), the last byte with readbyte.
+--- @return string of exactly sizes[d] bytes.
+--- @requires BizHawk memory API; st.sizes and st.read_len filled by setup().
+local function read_domain(st, d)
+    local size, n = st.sizes[d], st.read_len[d]
+    memory.usememorydomain(d)
+    local data = M.bytes_to_string(memory.readbyterange(0, n), n)
+    if n < size then data = data .. string.char(memory.readbyte(size - 1) % 256) end
+    return data
+end
+
 --- Folder holding this script (for the config file next to it).
 --- @return path with forward slashes and a trailing slash, or "" if unknown.
 --- @requires debug.getinfo (available in BizHawk 1.x Lua).
@@ -374,29 +387,44 @@ local function setup()
     st.snaps:add("frame\tdomain\tfile\tbytes\treason")
     st.writes:add("frame\taddress\told\tnew\tpc")
 
-    -- Probe readbyterange on each domain: log its result's shape, detect
-    -- builds that read `length` inclusively (one byte too many, which also
-    -- warns at the domain end), and compare against readbyte so a format
-    -- this script can't decode stops the run instead of saving zeros.
-    trace("checking memory domains")
+    -- Probe readbyterange on each domain with a full-size read, the way
+    -- snapshots use it. Some builds (BizHawk 1.11.7) refuse any range that
+    -- reaches the domain end, warn, and return nothing; then read one byte
+    -- less and fetch the last byte with readbyte (see read_domain). Finally
+    -- compare a few bytes with readbyte, so a result this script can't
+    -- decode stops the run instead of saving zeros.
+    trace("checking memory domains (a one-off 'outside memory domain' warning here is expected on some builds)")
     st.read_len = {}
     for _, d in ipairs(cfg.domains) do
         local size = try(memory.getmemorydomainsize, d)
         if not size then error("unknown memory domain '" .. d .. "'", 0) end
         st.sizes[d] = size
         memory.usememorydomain(d)
-        local probe = memory.readbyterange(0, 4)
-        local style = M.range_style(probe)
-        local inclusive = M.count_keys(type(probe) == "table" and probe or {}) == 5
-        st.read_len[d] = inclusive and (size - 1) or size
-        local want = {}
-        for i = 0, 3 do want[#want + 1] = string.char(memory.readbyte(i) % 256) end
-        local got = M.bytes_to_string(type(probe) == "table" and probe or {}, 4)
-        trace(("domain %s: %d bytes, readbyterange style %s%s, sample %s"):format(d, size, tostring(style),
-            inclusive and " (inclusive length)" or "", M.describe_table(probe, 3)))
-        if not style or got ~= table.concat(want) then
-            error(("readbyterange self-check failed on %s (style %s): can't decode it, so snapshots "
-                .. "would be wrong"):format(d, tostring(style)), 0)
+        local full = memory.readbyterange(0, size)
+        local got_full = M.count_keys(type(full) == "table" and full or {})
+        if got_full >= size then
+            st.read_len[d] = size
+        else
+            local short = memory.readbyterange(0, size - 1)
+            local got_short = M.count_keys(type(short) == "table" and short or {})
+            if got_short < size - 1 then
+                error(("readbyterange on %s returned %d of %d bytes (and %d of %d one byte shorter): "
+                    .. "can't take snapshots"):format(d, got_full, size, got_short, size - 1), 0)
+            end
+            st.read_len[d] = size - 1
+        end
+        local data = read_domain(st, d)
+        memory.usememorydomain(d)
+        local bad = {}
+        for _, i in ipairs({ 0, 1, math.floor(size / 2), size - 2, size - 1 }) do
+            if i >= 0 and data:byte(i + 1) ~= memory.readbyte(i) % 256 then bad[#bad + 1] = i end
+        end
+        trace(("domain %s: %d bytes, full read returned %d entries, reading %d + %s; style %s, sample %s")
+            :format(d, size, got_full, st.read_len[d], st.read_len[d] < size and "last byte via readbyte" or "none",
+                tostring(M.range_style(full) or M.range_style(memory.readbyterange(0, 4))), M.describe_table(full, 3)))
+        if #data ~= size or #bad > 0 then
+            error(("snapshot self-check failed on %s: %d bytes, mismatches at offsets %s"):format(
+                d, #data, table.concat(bad, ", ")), 0)
         end
     end
 
@@ -420,7 +448,8 @@ local function setup()
     if cfg.turbo then
         -- Speed never changes what a frame computes, so this only saves time.
         -- If this BizHawk build lacks these calls, say so instead of failing silently.
-        local ok1 = callable(client.speedmode) and pcall(client.speedmode, 6400)
+        -- 3200%: BizHawk 1.11.7 rejects 6400 ("Invalid speed value").
+        local ok1 = callable(client.speedmode) and pcall(client.speedmode, 3200)
         local ok2 = callable(emu.limitframerate) and pcall(emu.limitframerate, false)
         if not (ok1 or ok2) then
             trace("WARNING couldn't lift the speed limit from Lua; untick "
@@ -465,7 +494,7 @@ local function step(st)
     if snap_reason then
         for _, d in ipairs(cfg.domains) do
             memory.usememorydomain(d)
-            local data = M.bytes_to_string(memory.readbyterange(0, st.read_len[d]), st.sizes[d])
+            local data = read_domain(st, d)
             local name = M.snap_name(frame, d)
             local f = assert(io.open(st.out .. name, "wb"))
             f:write(data); f:close()
