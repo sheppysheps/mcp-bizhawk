@@ -35,7 +35,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "3"
+M.VERSION = "4"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -260,14 +260,33 @@ local function buffered(path)
     return w
 end
 
+--- Whether `f` can be called. BizHawk 1.x (LuaInterface) exposes its API
+--- functions as userdata, not Lua functions, so both count.
+--- @return true for a function or userdata.
+--- @requires Nothing.
+local function callable(f)
+    local t = type(f)
+    return t == "function" or t == "userdata"
+end
+
 --- Call a BizHawk function if it exists, ignoring errors.
---- @return the function's result, or nil.
+--- @return the function's result, or nil (missing function or error).
 --- @requires Nothing.
 local function try(f, ...)
-    if type(f) ~= "function" then return nil end
+    if not callable(f) then return nil end
     local ok, r = pcall(f, ...)
     if ok then return r end
     return nil
+end
+
+--- Read the movie mode, upper-cased so builds that differ in case agree.
+--- @return e.g. "PLAY", or nil + a reason (missing function or the error text).
+--- @requires BizHawk movie.mode().
+local function movie_mode()
+    if not callable(movie.mode) then return nil, "movie.mode is a " .. type(movie.mode) end
+    local ok, r = pcall(movie.mode)
+    if not ok then return nil, "movie.mode() failed: " .. tostring(r) end
+    return tostring(r):upper()
 end
 
 --- Folder holding this script (for the config file next to it).
@@ -302,8 +321,8 @@ local function setup()
     if not cfg then error("bad config: " .. err, 0) end
     trace("config ok, out = " .. cfg.out)
 
-    local mode = try(movie.mode)
-    trace("movie.mode() = " .. tostring(mode))
+    local mode, why = movie_mode()
+    trace("movie.mode() = " .. tostring(mode) .. (why and (" (" .. why .. ")") or ""))
     if mode ~= "PLAY" then
         error("a movie must be playing in read-only mode (movie.mode() = " .. tostring(mode)
             .. "). Recording mode would let inputs overwrite the movie.", 0)
@@ -348,8 +367,8 @@ local function setup()
     if cfg.turbo then
         -- Speed never changes what a frame computes, so this only saves time.
         -- If this BizHawk build lacks these calls, say so instead of failing silently.
-        local ok1 = type(client.speedmode) == "function" and pcall(client.speedmode, 6400)
-        local ok2 = type(emu.limitframerate) == "function" and pcall(emu.limitframerate, false)
+        local ok1 = callable(client.speedmode) and pcall(client.speedmode, 6400)
+        local ok2 = callable(emu.limitframerate) and pcall(emu.limitframerate, false)
         if not (ok1 or ok2) then
             trace("WARNING couldn't lift the speed limit from Lua; untick "
                 .. "Config > Speed/Skip > Clock Throttle to record faster")
@@ -406,7 +425,7 @@ local function step(st)
     if cfg.progress_every > 0 and frame % cfg.progress_every == 0 then
         trace(("frame %d / %d, %d lag frames so far"):format(frame, st.length, st.lag_total))
     end
-    local now = try(movie.mode)
+    local now = movie_mode()
     if now ~= "PLAY" then st.reason = "movie mode became " .. tostring(now); return true end
     return st.length > 0 and frame >= st.length
 end
