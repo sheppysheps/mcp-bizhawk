@@ -31,6 +31,20 @@ It also takes in three open dev-master handoffs: **breakpoint upgrades**, the **
 
 Recorder cost to keep in check: every watched byte is a callback. A1 and A7 add callbacks only at the configured addresses; A2-A6 are offline.
 
+### A9. Labeling station (A4 labels + A6 events, merged)
+
+Requested for the door and item randomizer MVP. A person names what the numbers can't; the tools supply what a person can't. Labeling happens **offline from captures**, not with prompts inside the emulator: no stopping a turbo pass at every door, no BizHawk 1.x `forms` dialogs (modal dialogs have blocked the emulator before), and labels can be corrected later.
+
+1. **`movie_export events`** finds every transition in a capture: room-pointer changes, building-style record copies, fast fades found by brightness (`shots --dark`), and edge transitions once their variable is known. Each event gets frames, old and new pointers, writer PC, before and after screenshots, and a **guessed method** where the data tells (pointer change with a long load, record copy, fade without load, no fade).
+2. **A local labeling page** (a static HTML file written into the export folder, never published, since the screenshots are game-derived) shows each event's before and after screenshots and asks:
+   - *Doors:* where is the player now; where were they before; the **exit method** at the origin (walk off an edge, press up at a door, climb down or up a ladder, crawl, warp, cutscene); the **entry state** at the destination (standing, climbing, crawling, facing, falling); what is required to use it (none, an ability or form, an item, a key).
+   - *Items:* what was picked up; whether it's major progression, a dungeon key, or minor.
+   Each distinct place (pointer value) is named once; later visits inherit the name.
+3. **Output:** `rooms.json`, `doors.json`, `items.json` in the shared findings format (C), each entry with its evidence (capture, frames, pointers, writer PCs).
+4. **Filled in automatically per room:** a tileset fingerprint (hash of the VRAM tile data), the palette (recovered from the screenshot with the tile-graphics skill, marked with the core that rendered it), and the player's pose (sprite tiles from the OAM snapshot).
+
+**Why entry state matters:** a randomizer that connects an exit to an entry of a different kind (an edge scroll into a ladder entry) can strand the player or confuse them. Recording both ends lets a randomizer offer pairing rules: same type only, any type, or one-way (decoupled) doors. Whether "any type" is safe depends on one research question per game: is the arrival state set by the destination, or carried over from the exit? Compare the player-state bytes on arrival at one destination reached by different exits.
+
 ### B. Live bridge (BizHawk 2.x)
 
 | # | Item | What it does | Why |
@@ -63,7 +77,8 @@ Planned randomizer features from the game side, and which items serve them:
 | Keysanity | Key counters and door/unlock flag bits | A3, A5 |
 | Logic presets (glitch levels) | A glitch catalog with frame ranges | A4, C |
 | Music and sound registers (research only) | The music-ID variable, sound-register writes | A7, A5 |
-| Door randomization | Door tables (one per transition type) | A1, A6, B4 |
+| Door randomization | Door tables (one per transition type), exit methods, entry states | A1, A9, B4 |
+| Item randomization | Item locations (room + pickup), item identity and class | A9, A3 |
 | Testing any patch | Scenario checks on 2.x | B8 |
 
 ## Suggested order
