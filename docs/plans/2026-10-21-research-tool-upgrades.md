@@ -1,6 +1,6 @@
 # Plan: research tool upgrades (2026-10-21)
 
-Status: **draft for review**. Nothing here is built yet.
+Status: **in progress** (reviewed 2026-10-22: start with group A, one item at a time, the items that help the game repos most first). A1 is built on `feat/movie-tools-2` and waits for its first real pass.
 
 The first movie captures (a 284,015-frame Game Boy Color TAS recorded four times on BizHawk 1.11.7) showed what game research needs next: room and door pointers are found by ranking bytes against lag bursts, a "teleport" was found as a block copy, and the writer PCs of watched bytes pointed straight at the routines involved. This plan turns those one-off analysis scripts into tools, and adds the live-emulator capabilities a randomizer project needs. Everything stays game-agnostic: addresses, domains and thresholds come from the user, never from the code.
 
@@ -18,7 +18,7 @@ It also takes in three open dev-master handoffs: **breakpoint upgrades**, the **
 
 | # | Item | What it does | Why |
 |---|---|---|---|
-| A1 | **`exec_watch`** | Config `exec_watch = <address> [capture <start> <len>]`: on every execution of the address, log frame, registers and the captured bytes to `execs.tsv`. Optional `max` per address. | The routine that copies a table holds the table's address in a register. One line in a config gives a data table's ROM location. |
+| A1 | **`exec_watch`** (built) | Config `exec_watch = <address> [stack <words>] [capture <start> <len>]... [max <hits>]`: on every execution of the address, log frame, registers, stack words and captured bytes to `execs.tsv`; hit counts in `run.tsv`. `movie_export execs` lists hits or groups them by fields (registers, pairs like `HL`, `stackN`, `capN`). | The routine that copies a table holds the table's address in a register. One line in a config gives a data table's ROM location. |
 | A2 | **Writer summary** | `movie_export writers`: per watched address, each distinct writer PC once, with first/last frame and count. | The per-writer deduplication from Shando's tracer, done offline from `writes.tsv` (no recorder change). |
 | A3 | **Bit-level diffs** | `movie_export writes --bits`: for each change, which bits flipped (`bit 3 set`). Flag ranges can be summarized per bit. | Item, key and door flags are single bits; bytes hide them. |
 | A4 | **Annotations** | A `labels.tsv` next to a capture (`start`, `end`, `label`, `kind` such as `glitch`, `cutscene`, `menu`); `movie_export` shows labels in timelines and can exclude labeled ranges from analysis. | Glitch windows must not be cataloged as normal states, and logic presets need a glitch catalog. |
@@ -74,6 +74,15 @@ Planned randomizer features from the game side, and which items serve them:
 7. **A6, A7** alongside the research that needs them.
 
 Branches: A items on `feat/movie-tools-2`; B items on `feat/breakpoints` (touches the Node↔Lua protocol, so both sides land together); C as `docs/` first.
+
+## Porting to modern BizHawk
+
+The recorder targets BizHawk 1.x because the movies studied so far only sync there. Modern BizHawk (2.x, Lua 5.4, current cores) is the long-term home, so the recorder is written to port cheaply:
+
+- Everything that doesn't call BizHawk is a pure helper (config parsing, formatting, snapshot reasons, register text) tested on both Lua 5.1 and 5.4, and all analysis lives in `movie_export.py`, which only reads files. A port replaces the thin BizHawk layer (`setup`, `step`, `finish`, the callbacks), not the logic.
+- The file formats (`frames.tsv`, `snapshots.tsv`, `writes.tsv`, `execs.tsv`, `run.tsv`) stay the same on both, so captures from either version compare with `movie_export compare`.
+- Known 1.x workarounds to drop or keep behind a check in a port: API functions exposed as userdata, `readbyterange` refusing ranges that reach a domain's end, the speed cap below 6400%. 2.x adds `comm` sockets, so a 2.x recorder can also stream to the live bridge instead of only writing files.
+- The live bridge's breakpoints (group B) already cover exec hits with registers on 2.x; A1 and B4 should share one hit format.
 
 ## Open questions for review
 

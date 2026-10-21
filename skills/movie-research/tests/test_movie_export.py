@@ -17,13 +17,20 @@ sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 import movie_export  # noqa: E402
 
 
-def write_export(folder, lag_frames=(), inputs=None, snapshots=None, writes=(), frames=10, meta=None):
+def write_export(folder, lag_frames=(), inputs=None, snapshots=None, writes=(), frames=10, meta=None, execs=None):
     """Create a fake movie_recorder export folder.
 
     lag_frames: frames flagged as lag. inputs: {frame: "A|Start"}.
     snapshots: {(frame, domain): bytes}. writes: (frame, addr, old, new, pc) tuples.
+    execs: (frame, addr, hit, registers text, stack hex, capture text) tuples;
+    None writes no execs.tsv (as when no exec_watch is set).
     Returns: the folder path.
     """
+    if execs is not None:
+        with open(os.path.join(folder, "execs.tsv"), "w", encoding="utf-8") as f:
+            f.write("frame\taddress\thit\tregisters\tstack\tcapture\n")
+            for x in execs:
+                f.write("%d\t0x%04X\t%d\t%s\t%s\t%s\n" % x)
     inputs = inputs or {}
     with open(os.path.join(folder, "frames.tsv"), "w", encoding="utf-8") as f:
         f.write("frame\tlag\tinput\n")
@@ -159,6 +166,44 @@ class Export(unittest.TestCase):
         with open(os.path.join(f, "snapshots.tsv"), "w", encoding="utf-8") as fh:
             fh.write("frame\tdomain\tfile\tbytes\n5\tWRAM\tsnap.bin\t1\n")
         self.assertEqual(movie_export.load(f)["snapshots"][0]["reason"], "?")
+
+    def test_parse_registers(self):
+        self.assertEqual(movie_export.parse_registers("A=0x12 PC=0x5FF6 bad SP=zz"), {"A": 0x12, "PC": 0x5FF6})
+        self.assertEqual(movie_export.parse_registers("?"), {})
+
+    def test_exec_field_pairs_stack_and_capture(self):
+        hit = {"registers": {"H": 0x62, "L": 0x42, "PC": 0x6BF6}, "stack": "EF5F0343", "capture": ["0C", "FF00"]}
+        self.assertEqual(movie_export.exec_field(hit, "HL"), 0x6242)
+        self.assertEqual(movie_export.exec_field(hit, "PC"), 0x6BF6)
+        self.assertEqual(movie_export.exec_field(hit, "stack0"), 0x5FEF)
+        self.assertEqual(movie_export.exec_field(hit, "stack1"), 0x4303)
+        self.assertEqual(movie_export.exec_field(hit, "stack0", big_endian=True), 0xEF5F)
+        self.assertIsNone(movie_export.exec_field(hit, "stack2"))
+        self.assertEqual(movie_export.exec_field(hit, "cap1"), "FF00")
+        self.assertIsNone(movie_export.exec_field(hit, "DE"))
+
+    def test_execs_grouped_by_source_pointer(self):
+        ex = [(3, 0x6BF6, 1, "H=0x62 L=0x42 PC=0x6BF6", "EF5F", "0C"),
+              (5, 0x6BF6, 2, "H=0x56 L=0x32 PC=0x6BF6", "EF5F", "14"),
+              (8, 0x6BF6, 3, "H=0x62 L=0x42 PC=0x6BF6", "EF5F", "0C"),
+              (9, 0x0150, 1, "H=0x00 L=0x00 PC=0x0150", "", "")]
+        f = write_export(self.folder("a"), execs=ex,
+                         meta={"started_at_frame": "0", "exec.0x6BF6.hits": "3", "exec.0x6BF6.logged": "3",
+                               "exec.0x6BF6.errors": "0"})
+        _, text = run(["execs", f, "--address", "0x6BF6", "--group", "HL,cap0,stack0"])
+        self.assertIn("3 hits, 2 distinct (HL, cap0, stack0)", text)
+        self.assertIn("HL=0x6242  cap0=0C  stack0=0x5FEF  x2  frames 3-8", text)
+        _, raw = run(["execs", f, "--limit", "1"])
+        self.assertIn("#1", raw)
+        self.assertIn("3 more", raw)
+        _, summary = run(["summary", f])
+        self.assertIn("exec hits logged 4: 0x6BF6 3 hits (3 logged)", summary)
+
+    def test_execs_without_execs_file(self):
+        f = write_export(self.folder("a"))
+        _, text = run(["execs", f])
+        self.assertIn("no execs.tsv", text)
+        self.assertEqual(movie_export.load(f)["execs"], [])
 
     def test_not_an_export(self):
         with self.assertRaises(SystemExit):

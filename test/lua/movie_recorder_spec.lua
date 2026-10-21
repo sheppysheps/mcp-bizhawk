@@ -19,6 +19,30 @@ return function(mr)
     local defaults = mr.parse_config("out = x")
     check("diagnostics defaults", defaults and defaults.heartbeat_every == 0 and defaults.trace_snapshots == true)
 
+    -- exec_watch.
+    local ew = mr.parse_exec_watch("0x6BF6 stack 2 capture 0xFF80 0x10 capture 0xC000 1 max 50")
+    check("exec_watch parses all options", ew and ew.address == 0x6BF6 and ew.stack == 2 and ew.max == 50
+        and #ew.captures == 2 and ew.captures[1].start == 0xFF80 and ew.captures[1].length == 16
+        and ew.captures[2].length == 1)
+    local ew0 = mr.parse_exec_watch("0x0150")
+    check("exec_watch defaults", ew0 and ew0.stack == 0 and #ew0.captures == 0 and ew0.max == mr.EXEC_DEFAULT_MAX)
+    local function ew_rejects(name, value, expect)
+        local w, e = mr.parse_exec_watch(value)
+        check(name, w == nil and tostring(e):find(expect, 1, true) ~= nil, tostring(e))
+    end
+    ew_rejects("exec_watch rejects a missing address", "", "needs '<address>")
+    ew_rejects("exec_watch rejects an unknown option", "0x100 bank 3", "unknown option 'bank'")
+    ew_rejects("exec_watch caps stack words", "0x100 stack 99", "stack needs")
+    ew_rejects("exec_watch caps capture length", "0x100 capture 0xC000 999", "capture needs")
+    ew_rejects("exec_watch rejects max 0", "0x100 max 0", "max needs")
+    local ecfg = mr.parse_config("out = x\nexec_watch = 0x6BF6 stack 1\nexec_watch = 0x6C1C")
+    check("config collects exec_watch lines", ecfg and #ecfg.exec == 2 and ecfg.exec[2].address == 0x6C1C)
+    rejects("config reports a bad exec_watch with its line", "out = x\nexec_watch = 0x100 nope", "line 2: exec_watch")
+    check("registers_string sorts names and skips non-numbers",
+        mr.registers_string({ PC = 0x5FF6, A = 18, Flags = "z" }) == "A=0x12 PC=0x5FF6"
+        and mr.registers_string({}) == "?" and mr.registers_string(nil) == "?")
+    check("hex_bytes", mr.hex_bytes({ 10, 27, 255, 256 }) == "0A1BFF00" and mr.hex_bytes({}) == "")
+
     -- Numbers.
     check("parse decimal", mr.parse_int(" 146 ") == 146)
     check("parse hex", mr.parse_int("0xC000") == 0xC000)

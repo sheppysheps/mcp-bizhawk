@@ -52,6 +52,7 @@ python movie_export.py frames  <out> --from 140 --to 160   # lag flags and input
 python movie_export.py writes  <out> --address 0xC0A0      # who wrote this byte, when, which value
 python movie_export.py timeline <out> --address 0xC9F9 --width 2 --unique   # one row per room/map seen
 python movie_export.py compare <outA> <outB>               # first divergence between two recordings
+python movie_export.py execs   <out> --address 0x1234 --group HL,DE,stack0   # distinct register values when code ran
 ```
 
 Add `--json <file>` to keep a full result. Long lists are truncated on screen with a count of what was left out.
@@ -65,6 +66,10 @@ Add `--json <file>` to keep a full result. Long lists are truncated on screen wi
 ### Recipes
 
 - **Which room or map is on screen?** Ask the game, not a vision model: every game keeps a "current room" variable. Record with `snapshot_on_change = <address> <width> 30`, then `timeline --unique` lists each distinct value with its first frame, visit count and a snapshot frame taken just after entering. Label each *distinct* value once, from its screenshot, instead of recognizing every frame. The `pc` of the writes leads to the room loader, and from there to each room's data. Confirm the address first: the value must change exactly at room transitions and nowhere else.
+  - *Finding the variable:* room loads usually show up as lag bursts of a typical length in `frames.tsv`. Rank bytes by how well their changes between snapshots match those bursts (precision: it changes only at bursts; recall: it changes at every burst), then confirm the best candidates with `watch` on a second pass. A block of many bytes changing together is a buffer the room loader fills, not the ID.
+  - *Expect more than one kind of transition.* Bursts the candidate doesn't explain are the next lead: a game may teleport inside one large map (a fade with no room change), or scroll into a neighboring map with no fade at all. Rank again against only the unexplained bursts, and check a few screenshots by eye, since the person watching the movie spots transitions that the numbers miss.
+
+- **Where is the table a routine reads?** Take the writer `pc` of a copied value (a destination record, a loaded room header), and record a pass with `exec_watch = <pc> stack 2` (plus a few addresses just before it, since the logged PC can be the next instruction). `execs --group HL,DE,stack0` (register names depend on the CPU) lists each distinct source pointer, with the caller's return address and the frames it happened. The source pointer is the table entry; the caller usually chose it. Add `capture` for the game's "current bank" variable when the CPU maps code and data in banks.
 
 - **When does an event happen?** Snapshot every N frames, find the two snapshots it falls between (by screenshot or a known RAM value), then snapshot every frame in that gap.
 - **Which byte is a flag or counter?** Diff snapshots from just before and just after the event, then `watch` the candidate addresses on a second pass: `writes` shows the exact frame, the old and new values, and the PC of the code that wrote it (a lead into the disassembly).

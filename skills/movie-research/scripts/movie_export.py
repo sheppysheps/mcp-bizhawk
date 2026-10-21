@@ -9,6 +9,8 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
   writes   <export> [--address A]    watched writes (frame, address, old, new, pc)
   timeline <export> --address A      segments by a watched variable, e.g. the current
                                      room, with a snapshot frame for each
+  execs    <export> [--group HL,DE]  exec-watch hits: registers each time a watched
+                                     address ran, raw or grouped by distinct values
   compare  <a> <b>                   first frame where two recordings of the same
                                      movie differ: input, lag, or memory snapshot
 
@@ -58,7 +60,75 @@ def load(folder):
              for r in read_tsv(os.path.join(folder, "snapshots.tsv"))]
     writes = [{"frame": int(r["frame"]), "address": r["address"], "old": int(r["old"]), "new": int(r["new"]),
                "pc": r["pc"]} for r in read_tsv(os.path.join(folder, "writes.tsv"))]
-    return {"folder": folder, "meta": meta, "frames": frames, "snapshots": snaps, "writes": writes}
+    # execs.tsv exists from recorder version 9 on, only when exec_watch is set.
+    execs = [{"frame": int(r["frame"]), "address": r["address"], "hit": int(r["hit"]),
+              "registers": parse_registers(r["registers"]), "stack": r.get("stack") or "",
+              "capture": (r.get("capture") or "").split()}
+             for r in read_tsv(os.path.join(folder, "execs.tsv"))]
+    return {"folder": folder, "meta": meta, "frames": frames, "snapshots": snaps, "writes": writes, "execs": execs}
+
+
+def parse_registers(text):
+    """Parse the recorder's register column ("A=0x12 PC=0x5FF6").
+
+    Returns: dict name -> int; empty for "?" or malformed parts.
+    Requires: nothing.
+    """
+    regs = {}
+    for part in (text or "").split():
+        name, _, value = part.partition("=")
+        try:
+            regs[name] = int(value, 0)
+        except ValueError:
+            pass
+    return regs
+
+
+def exec_field(hit, name, big_endian=False):
+    """Read one named field of an exec hit, for grouping.
+
+    Names: a register ("A", "PC"); a pair of one-letter registers read high
+    byte first ("HL" = H * 256 + L, as on Z80-family CPUs); "stackN" for the
+    Nth 2-byte word at SP (little-endian unless big_endian); "capN" for the
+    Nth captured range as hex text.
+    Returns: an int or str, or None when the hit doesn't have that field.
+    Requires: nothing.
+    """
+    regs = hit["registers"]
+    if name in regs:
+        return regs[name]
+    if len(name) == 2 and name[0] in regs and name[1] in regs:
+        return regs[name[0]] * 256 + regs[name[1]]
+    if name.startswith("stack") and name[5:].isdigit():
+        i = int(name[5:])
+        word = hit["stack"][4 * i:4 * i + 4]
+        if len(word) < 4:
+            return None
+        lo, hi = int(word[0:2], 16), int(word[2:4], 16)
+        return lo * 256 + hi if big_endian else hi * 256 + lo
+    if name.startswith("cap") and name[3:].isdigit():
+        i = int(name[3:])
+        return hit["capture"][i] if i < len(hit["capture"]) else None
+    return None
+
+
+def group_execs(execs, fields, big_endian=False):
+    """Group exec hits by the values of some fields.
+
+    Returns: list of {"values": {field: value}, "count", "first_frame",
+    "last_frame"}, in order of first appearance.
+    Requires: nothing.
+    """
+    groups = {}
+    for h in execs:
+        key = tuple(exec_field(h, f, big_endian) for f in fields)
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"values": dict(zip(fields, key)), "count": 0,
+                               "first_frame": h["frame"], "last_frame": h["frame"]}
+        g["count"] += 1
+        g["last_frame"] = h["frame"]
+    return sorted(groups.values(), key=lambda g: g["first_frame"])
 
 
 def lag_runs(frames, top=5):
@@ -236,8 +306,51 @@ def cmd_summary(args):
              f"  lag frames {lag} ({100.0 * lag / max(1, len(fr)):.2f}%); longest runs: "
              + (", ".join(f"{n} at {f}" for f, n in runs) or "none"),
              f"  snapshots {len(e['snapshots'])} files at {data['snapshot_frames']} frames; watched writes {len(e['writes'])}"]
+    exec_keys = sorted(k[len("exec."):-len(".hits")] for k in m if k.startswith("exec.") and k.endswith(".hits"))
+    if exec_keys or e["execs"]:
+        data["execs"] = len(e["execs"])
+        parts = [f"{a} {m.get(f'exec.{a}.hits', '?')} hits ({m.get(f'exec.{a}.logged', '?')} logged"
+                 + (f", {m[f'exec.{a}.errors']} errors" if m.get(f"exec.{a}.errors", "0") != "0" else "") + ")"
+                 for a in exec_keys]
+        lines.append(f"  exec hits logged {len(e['execs'])}" + (": " + "; ".join(parts) if parts else ""))
     if m.get("started_at_frame") not in (None, "0"):
         lines.append(f"  WARNING: recording started at frame {m['started_at_frame']}, not 0")
+    _emit(args, data, lines)
+
+
+def _fmt(value):
+    """Show a grouped field value: ints as hex, others as text. Returns: str."""
+    if value is None:
+        return "-"
+    return f"0x{value:04X}" if isinstance(value, int) else str(value)
+
+
+def cmd_execs(args):
+    """Exec-watch hits, raw or grouped by register/stack/capture values. Returns: None."""
+    e = load(args.export)
+    want = None if args.address is None else int(args.address, 0)
+    hits = [h for h in e["execs"] if (want is None or int(h["address"], 16) == want)
+            and args.start <= h["frame"] <= args.end]
+    if not hits:
+        _emit(args, [], ["no matching exec hits" + ("" if e["execs"] else " (no execs.tsv: set exec_watch)")])
+        return
+    if args.group:
+        fields = [f.strip() for f in args.group.split(",") if f.strip()]
+        groups = group_execs(hits, fields, args.big_endian)
+        shown = groups[:args.limit]
+        lines = [f"{len(hits)} hits, {len(groups)} distinct ({', '.join(fields)})"]
+        lines += ["  " + "  ".join(f"{k}={_fmt(v)}" for k, v in g["values"].items())
+                  + f"  x{g['count']}  frames {g['first_frame']}-{g['last_frame']}" for g in shown]
+        data, rows = groups, groups
+    else:
+        shown = hits[:args.limit]
+        lines = [f"{h['frame']:>8}  {h['address']}  #{h['hit']:<5} "
+                 + " ".join(f"{k}={_fmt(v)}" for k, v in sorted(h["registers"].items()))
+                 + (f"  stack {h['stack']}" if h["stack"] else "") + (f"  cap {' '.join(h['capture'])}" if h["capture"] else "")
+                 for h in shown]
+        data, rows = hits, hits
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
     _emit(args, data, lines)
 
 
@@ -363,6 +476,18 @@ def main(argv=None):
     t.add_argument("--limit", type=int, default=40)
     common(t)
     t.set_defaults(fn=cmd_timeline)
+
+    x = sub.add_parser("execs", help="exec-watch hits (registers when an address ran), raw or grouped")
+    x.add_argument("export")
+    x.add_argument("--address", help="one watched address, e.g. 0x6BF6")
+    x.add_argument("--group", help="comma list of fields to group by: registers (A, PC), pairs (HL, DE), "
+                                   "stackN (Nth word at SP), capN (Nth captured range)")
+    x.add_argument("--big-endian", action="store_true", help="read stack words high byte first")
+    x.add_argument("--from", dest="start", type=int, default=0)
+    x.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    x.add_argument("--limit", type=int, default=40)
+    common(x)
+    x.set_defaults(fn=cmd_execs)
 
     c = sub.add_parser("compare", help="first divergence between two recordings of one movie")
     c.add_argument("a")
