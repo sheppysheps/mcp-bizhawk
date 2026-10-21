@@ -4,11 +4,13 @@
 -- generated launcher script. Writes one line per check, then exits BizHawk.
 
 local root, out_path = MCP_BIZHAWK_TEST_ROOT, MCP_BIZHAWK_TEST_OUT
-package.path = root .. "/lua/?.lua;" .. root .. "/test/lua/?.lua;" .. package.path
+package.path = root .. "/lua/?.lua;" .. root .. "/lua/legacy/?.lua;" .. root .. "/test/lua/?.lua;" .. package.path
 local sandbox, json = require("sandbox"), require("json")
 local results = require("sandbox_spec")(sandbox, json)
 for _, r in ipairs(require("snapshot_spec")(require("snapshot"))) do results[#results + 1] = r end
 for _, r in ipairs(require("bytesearch_spec")(require("bytesearch"))) do results[#results + 1] = r end
+-- require() hands the module its name, so the recorder returns its helpers here instead of recording.
+for _, r in ipairs(require("movie_recorder_spec")(require("movie_recorder"))) do results[#results + 1] = r end
 
 --- Record an NLua-only check.
 local function check(name, pass, detail)

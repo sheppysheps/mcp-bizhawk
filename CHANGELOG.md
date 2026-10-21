@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Movie research (stage 1):** `lua/legacy/movie_recorder.lua` records a
+  playing BizHawk movie to files (every frame's lag flag and input, memory
+  snapshots and screenshots at chosen frames, and watched memory writes with
+  the writing PC). It runs in BizHawk 1.x (Lua 5.1, no sockets), so movies
+  that only sync on old versions can still be studied; it refuses to run
+  unless the movie plays read-only, writes only into its output folder and
+  never executes its config. `skills/movie-research` reads the recordings
+  (`summary`, `frames`, `writes`, and `compare`, which finds the first
+  frame where two recordings of one movie diverge). CI now also runs the
+  legacy Lua spec on Lua 5.1. Recorder v2 adds `snapshot_on_change` (a
+  snapshot and screenshot a set delay after a watched value changes, e.g.
+  on entering a room), logs each watched byte's starting value, and tags
+  snapshots with their reason; `movie_export.py timeline` splits a movie
+  into segments by a watched variable, such as the current room.
+
 - **`skills/tile-graphics`**, the first skill: turns memory dumps into tile
   sheets for most tile-based systems (GB/GBC/SNES 2bpp, NES 2bpp, SNES/PCE
   4bpp, GBA 4/8bpp, Genesis 4bpp) and fully decodes Game Boy / Game Boy
