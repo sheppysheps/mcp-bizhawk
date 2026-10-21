@@ -88,6 +88,14 @@ return function(mr)
     check("bytes from 0-based keys", mr.bytes_to_string(zero, 3) == "AB" .. string.char(300 % 256))
     check("bytes from 1-based keys", mr.bytes_to_string(one, 2) == "AB")
     check("missing bytes become 0", mr.bytes_to_string({}, 2) == "\0\0")
+    local hex = { ["00"] = "41", ["01"] = "42", ["0A"] = "FF", ["0B"] = "00" }
+    check("bytes from BizHawk 1.x hex-string tables",
+          mr.bytes_to_string(hex, 12) == "AB" .. string.rep("\0", 8) .. "\255\0")
+    check("range_style tells the formats apart",
+          mr.range_style(zero) == "zero" and mr.range_style(one) == "one" and mr.range_style(hex) == "hex"
+          and mr.range_style({}) == nil and mr.range_style("x") == nil)
+    check("describe_table names key and value types",
+          mr.describe_table({ ["00"] = "41" }, 3) == "00(string)=41(string)" and mr.describe_table(nil, 3) == "a nil")
     local big = {}
     for i = 0, 9999 do big[i] = i % 256 end
     local s = mr.bytes_to_string(big, 10000)

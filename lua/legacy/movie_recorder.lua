@@ -35,7 +35,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "4"
+M.VERSION = "5"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -204,15 +204,48 @@ function M.snap_name(frame, domain)
     return ("shot_f%07d.png"):format(frame)
 end
 
---- Turn a readbyterange() result into a byte string.
---- BizHawk versions differ in whether keys start at 0 or 1, so both are tried.
+--- Detect the shape of a readbyterange(0, n) result. BizHawk 2.x returns
+--- numbers keyed from 0 (or 1); BizHawk 1.x returns hex strings for both
+--- keys and values, e.g. t["1F"] = "A0".
+--- @return "zero", "one" or "hex", or nil when the shape is unknown (e.g. empty).
+--- @requires Nothing.
+function M.range_style(t)
+    if type(t) ~= "table" then return nil end
+    if t[0] ~= nil then return "zero" end
+    if t[1] ~= nil then return "one" end
+    if t["00"] ~= nil or t["0"] ~= nil then return "hex" end
+    return nil
+end
+
+--- Describe the first few entries of a table, for the log.
+--- @return text like "00(string)=FF(string), ...", or the type for non-tables.
+--- @requires Nothing.
+function M.describe_table(t, n)
+    if type(t) ~= "table" then return "a " .. type(t) end
+    local parts = {}
+    for k, v in pairs(t) do
+        parts[#parts + 1] = ("%s(%s)=%s(%s)"):format(tostring(k), type(k), tostring(v), type(v))
+        if #parts >= n then break end
+    end
+    return #parts > 0 and table.concat(parts, ", ") or "empty"
+end
+
+--- Turn a readbyterange() result into a byte string (any style above).
 --- @return string of `len` bytes (missing bytes become 0).
 --- @requires Nothing.
 function M.bytes_to_string(t, len)
     local parts, chunk = {}, {}
-    local base = (t[0] ~= nil) and 0 or 1
+    local style = M.range_style(t)
+    local base = (style == "zero") and 0 or 1
     for i = 0, len - 1 do
-        chunk[#chunk + 1] = string.char((t[base + i] or 0) % 256)
+        local v
+        if style == "hex" then
+            v = t[("%02X"):format(i)]
+            v = v and tonumber(v, 16)
+        else
+            v = t[base + i]
+        end
+        chunk[#chunk + 1] = string.char((v or 0) % 256)
         if #chunk == 4096 then parts[#parts + 1] = table.concat(chunk); chunk = {} end
     end
     parts[#parts + 1] = table.concat(chunk)
@@ -341,10 +374,30 @@ local function setup()
     st.snaps:add("frame\tdomain\tfile\tbytes\treason")
     st.writes:add("frame\taddress\told\tnew\tpc")
 
+    -- Probe readbyterange on each domain: log its result's shape, detect
+    -- builds that read `length` inclusively (one byte too many, which also
+    -- warns at the domain end), and compare against readbyte so a format
+    -- this script can't decode stops the run instead of saving zeros.
     trace("checking memory domains")
+    st.read_len = {}
     for _, d in ipairs(cfg.domains) do
-        st.sizes[d] = try(memory.getmemorydomainsize, d)
-        if not st.sizes[d] then error("unknown memory domain '" .. d .. "'", 0) end
+        local size = try(memory.getmemorydomainsize, d)
+        if not size then error("unknown memory domain '" .. d .. "'", 0) end
+        st.sizes[d] = size
+        memory.usememorydomain(d)
+        local probe = memory.readbyterange(0, 4)
+        local style = M.range_style(probe)
+        local inclusive = M.count_keys(type(probe) == "table" and probe or {}) == 5
+        st.read_len[d] = inclusive and (size - 1) or size
+        local want = {}
+        for i = 0, 3 do want[#want + 1] = string.char(memory.readbyte(i) % 256) end
+        local got = M.bytes_to_string(type(probe) == "table" and probe or {}, 4)
+        trace(("domain %s: %d bytes, readbyterange style %s%s, sample %s"):format(d, size, tostring(style),
+            inclusive and " (inclusive length)" or "", M.describe_table(probe, 3)))
+        if not style or got ~= table.concat(want) then
+            error(("readbyterange self-check failed on %s (style %s): can't decode it, so snapshots "
+                .. "would be wrong"):format(d, tostring(style)), 0)
+        end
     end
 
     -- Write-watches: callbacks only note "written, by this PC"; values are
@@ -412,7 +465,7 @@ local function step(st)
     if snap_reason then
         for _, d in ipairs(cfg.domains) do
             memory.usememorydomain(d)
-            local data = M.bytes_to_string(memory.readbyterange(0, st.sizes[d]), st.sizes[d])
+            local data = M.bytes_to_string(memory.readbyterange(0, st.read_len[d]), st.sizes[d])
             local name = M.snap_name(frame, d)
             local f = assert(io.open(st.out .. name, "wb"))
             f:write(data); f:close()
