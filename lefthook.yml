@@ -1,0 +1,13 @@
+# Git hooks for this repo, managed by lefthook (https://lefthook.dev).
+# Install once per clone: `lefthook install`. Never bypass a failing hook
+# (--no-verify, LEFTHOOK=0) unless Sheppysheps says so for a specific commit.
+# pre-commit stays fast (asset guard only); tests run on pre-push.
+pre-commit:
+  commands:
+    asset-guard:
+      run: bash scripts/guard-assets.sh
+
+pre-push:
+  commands:
+    test:
+      run: npm test
