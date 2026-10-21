@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Movie research for BizHawk 1.x** (`lua/legacy/movie_recorder.lua`, the
+  `skills/movie-research` skill): records what a movie does, frame by frame,
+  on BizHawk builds without a socket API (tested on 1.11.7, Lua 5.1). It
+  writes every frame's lag flag and input, memory snapshots (periodic, listed,
+  or a set delay after a watched address changes), screenshots named by why
+  they were taken, and write-watches with the writing PC. A config file is
+  parsed as text and never executed. Each stage and any error, with a
+  traceback, go to `movie_recorder.log`, with an optional heartbeat to find
+  hangs. The recorder handles 1.11.7 quirks: API functions exposed as
+  userdata, `readbyterange` refusing ranges that reach a domain's end
+  (self-checked against `readbyte` at setup), and a speed cap below 6400%.
+  `movie_export.py` summarizes a capture, builds value timelines, and
+  compares two captures (first input, lag or snapshot difference). Tested on
+  Lua 5.1 (LuaJIT) and 5.4 in CI; a 284,015-frame movie recorded
+  deterministically across four passes.
+
 - **Movie research (stage 1):** `lua/legacy/movie_recorder.lua` records a
   playing BizHawk movie to files (every frame's lag flag and input, memory
   snapshots and screenshots at chosen frames, and watched memory writes with
