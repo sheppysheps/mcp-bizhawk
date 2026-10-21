@@ -64,7 +64,11 @@ return function(mr)
         and cp.start_state == "C:/st/state_f0050000.State")
     rejects("save_states rejects frame 0", "out = x\nsave_states = 0", "bad save_states frame")
     rejects("start_state needs a path", "out = x\nstart_state =", "start_state needs")
-    check("no checkpoints by default", d0 and d0.start_state == nil and mr.count_keys(d0.save_states) == 0)
+    check("no checkpoints by default", d0 and d0.start_state == nil and mr.count_keys(d0.save_states) == 0
+        and d0.save_states_every == 0 and not mr.should_save_state(d0, 1000))
+    local ce = mr.parse_config("out = x\nsave_states_every = 1000\nsave_states = 1500")
+    check("save_states_every plus listed frames", ce and mr.should_save_state(ce, 1000) and mr.should_save_state(ce, 2000)
+        and mr.should_save_state(ce, 1500) and not mr.should_save_state(ce, 1999) and not mr.should_save_state(ce, 0))
 
     -- watch lines with register logging.
     local pw = mr.parse_watch("0xCC30 0x30")

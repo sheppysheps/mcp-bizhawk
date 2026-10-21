@@ -39,7 +39,7 @@
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "13"
+M.VERSION = "14"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -66,7 +66,8 @@ end
 --- snapshot_range (repeatable: "<start> <end> <step>": snapshot every <step>
 --- frames from <start> to <end>, for dense coverage of a window), stop_after
 --- (end the recording after this frame; 0 = play to the end), save_states
---- (frames at which to save a checkpoint savestate into `out`), start_state
+--- (frames at which to save a checkpoint savestate into `out`), save_states_every
+--- (also save one every N frames; 0 = off; about 75 KB each), start_state
 --- (a checkpoint to load at startup, so recording starts there), screenshots, watch (repeatable: "<start> <length>" on the System Bus),
 --- snapshot_on_change (repeatable: "<start> <length> [delay]": watch these
 --- bytes AND snapshot `delay` frames after any of them changes, default 30,
@@ -86,7 +87,7 @@ function M.parse_config(text)
         screenshots = true, watch = {}, on_change = {}, max_watch_bytes = 4096,
         turbo = true, exit_at_end = false, flush_every = 600, progress_every = 10000,
         heartbeat_every = 0, trace_snapshots = true, exec = {}, snapshot_ranges = {}, stop_after = 0,
-        save_states = {}, start_state = nil,
+        save_states = {}, save_states_every = 0, start_state = nil,
     }
     local function bool(v, line)
         v = v:lower()
@@ -154,7 +155,8 @@ function M.parse_config(text)
                     end
                     cfg.exec[#cfg.exec + 1] = w
                 elseif key == "snapshot_every" or key == "max_watch_bytes" or key == "flush_every"
-                    or key == "progress_every" or key == "heartbeat_every" or key == "stop_after" then
+                    or key == "progress_every" or key == "heartbeat_every" or key == "stop_after"
+                    or key == "save_states_every" then
                     local n = M.parse_int(value)
                     if not n then error("line " .. line .. ": " .. key .. " needs a whole number", 0) end
                     cfg[key] = n
@@ -310,6 +312,15 @@ function M.snapshot_reason(cfg, frame, pending)
     end
     if cfg.snapshot_every > 0 and frame > 0 and frame % cfg.snapshot_every == 0 then return "every" end
     return nil
+end
+
+--- Decide whether to save a checkpoint savestate at this frame.
+--- @return true for a frame listed in save_states or a multiple of save_states_every.
+--- @requires Nothing.
+function M.should_save_state(cfg, frame)
+    if cfg.save_states and cfg.save_states[frame] then return true end
+    local every = cfg.save_states_every or 0
+    return every > 0 and frame > 0 and frame % every == 0
 end
 
 --- Count the keys of a table (sets like snapshot_frames have no length).
@@ -750,7 +761,7 @@ local function step(st)
     -- Checkpoints: a savestate at chosen frames, for later passes that start
     -- there (start_state). Saved after the frame's data, so loading it
     -- continues with the next frame.
-    if cfg.save_states[frame] then
+    if M.should_save_state(cfg, frame) then
         local name = ("state_f%07d.State"):format(frame)
         local ok, err = pcall(savestate.save, st.out .. name)
         trace(ok and ("saved checkpoint " .. name) or ("couldn't save checkpoint " .. name .. ": " .. tostring(err)))
