@@ -303,6 +303,36 @@ class Export(unittest.TestCase):
         self.assertIn("f    110    10.0  range", text)
         self.assertNotIn("f    100", text)
 
+    def test_events_group_changes_and_guess_the_method(self):
+        # A 2-byte room pointer changes at 100 (with an 8-frame load) and at 300
+        # (no load); a door ID changes at 105 (joins the first event) and at 500
+        # (on its own, during a dark screenshot). A dark screenshot at 700 has
+        # no change near it.
+        writes = [(1, 0xC000, 0, 0x10, "init"), (1, 0xC001, 0, 0x40, "init"), (1, 0xC100, 0, 1, "init"),
+                  (100, 0xC000, 0x10, 0x20, "0x5FEF"), (100, 0xC001, 0x40, 0x41, "0x5FF9"),
+                  (105, 0xC100, 1, 2, "0x5E3F"), (300, 0xC000, 0x20, 0x30, "0x5FEF"), (500, 0xC100, 2, 3, "0x5E3F")]
+        f = write_export(self.folder("e"), writes=writes, frames=800, lag_frames=range(102, 110))
+        grey = lambda v: [(v, v, v, 255)] * 16  # noqa: E731
+        for frame, level, reason in ((90, 200, "every"), (130, "200", "change-0xC000"), (490, 200, "every"),
+                                     (510, 5, "every"), (600, 200, "every"), (700, 5, "every")):
+            movie_export.png.write_png(os.path.join(f, f"shot_f{frame:07d}_{reason}.png"), 4, 4, grey(int(level)))
+        e = movie_export.load(f)
+        rows = movie_export.events(e, [("room", 0xC000, 2), ("door", 0xC100, 1)], fades=[510, 700])
+        self.assertEqual([(r["frame"], r["guess"]) for r in rows],
+                         [(100, "load"), (300, "instant"), (500, "fade"), (700, "unexplained fade")])
+        first = rows[0]
+        self.assertEqual(first["lag"], 8)
+        self.assertEqual([(c["source"], c["old"], c["new"], c["pcs"]) for c in first["changes"]],
+                         [("room", 0x4010, 0x4120, ["0x5FEF", "0x5FF9"]), ("door", 1, 2, ["0x5E3F"])])
+        self.assertEqual(first["shot_before"], "shot_f0000090_every.png")
+        self.assertEqual(first["shot_after"], "shot_f0000130_change-0xC000.png")
+        code, text = run(["events", f, "--source", "room", "0xC000", "2", "--source", "door", "0xC100", "1",
+                          "--fades", "0.5"])
+        self.assertEqual(code, 0)
+        self.assertIn("4 events: 1 fade, 1 instant, 1 load, 1 unexplained fade", text)
+        self.assertIn("room 4010->4120 pc 0x5FEF,0x5FF9; door 01->02 pc 0x5E3F", text)
+        self.assertEqual(run(["events", f, "--source", "x", "0xD000", "1"])[0], 1)
+
     def test_execs_without_execs_file(self):
         f = write_export(self.folder("a"))
         _, text = run(["execs", f])

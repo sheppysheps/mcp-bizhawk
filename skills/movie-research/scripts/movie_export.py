@@ -21,6 +21,10 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
                                      address ran, raw or grouped by distinct values;
                                      --writes: registers at each write to a watch
                                      line with 'registers'
+  events   <export> --source room 0xC3EF 3 [--source ...] [--fades 0.5]
+                                     transitions: changes of named variables grouped,
+                                     with writer PCs, lag burst, screenshots before and
+                                     after, and a guessed method (load, fade, instant)
   shots    <export> [--dark 0.5]     screenshots with mean brightness; --dark lists
                                      dips (fades, black transition screens)
   compare  <a> <b>                   first frame where two recordings of the same
@@ -33,6 +37,7 @@ Run `python movie_export.py <subcommand> -h` for options.
 """
 
 import argparse
+import bisect
 import csv
 import hashlib
 import json
@@ -365,6 +370,75 @@ def timeline(export, address, width=1, big_endian=False, min_frames=1):
     return merged
 
 
+def events(export, sources, cluster=60, lag_min=5, fades=None):
+    """Transitions in a capture: changes of named watched variables, grouped.
+
+    Each source is (name, address, width), e.g. ("room", 0xC3EF, 3). Changes
+    of all sources within `cluster` frames of the previous change join one
+    event. Each event gets the nearest lag burst (a run of at least `lag_min`
+    lag frames starting up to 10 frames before and 60 after the first change),
+    the screenshots just before and just after, and a guessed method: "load"
+    (with a lag burst), "fade" (no burst, but a dark screenshot in the event)
+    or "instant". `fades` is an optional list of dark screenshot frames
+    (from shots --dark); dark frames that no change explains become events of
+    their own ("unexplained fade"), the lead to transitions without a known
+    variable.
+    Returns: list of {"frame", "end", "changes": [{"source", "frame", "old",
+    "new", "width", "pcs"}], "lag", "guess", "shot_before", "shot_after"}.
+    Raises ValueError when a source was never watched (see timeline).
+    Requires: an export loaded with load().
+    """
+    by_frame = {}
+    for w in export["writes"]:
+        if w["pc"] != "init":
+            by_frame.setdefault(w["frame"], []).append(w)
+    changes = []
+    for name, address, width in sources:
+        segs = timeline(export, address, width, min_frames=2)
+        wanted = {address + i for i in range(width)}
+        for prev, seg in zip(segs, segs[1:]):
+            # A value written in two halves lands over two frames: look at both.
+            near = by_frame.get(seg["start"] - 1, []) + by_frame.get(seg["start"], [])
+            pcs = sorted({w["pc"] for w in near if int(w["address"], 16) in wanted})
+            changes.append({"source": name, "frame": seg["start"], "old": prev["value"], "new": seg["value"],
+                            "width": width, "pcs": pcs})
+    changes.sort(key=lambda c: c["frame"])
+    fade_frames = sorted(fades or [])
+    groups = []
+    for c in changes:
+        if groups and c["frame"] - groups[-1]["end"] <= cluster:
+            groups[-1]["changes"].append(c)
+            groups[-1]["end"] = c["frame"]
+        else:
+            groups.append({"frame": c["frame"], "end": c["frame"], "changes": [c]})
+    for f in fade_frames:
+        if not any(g["frame"] - cluster <= f <= g["end"] + cluster for g in groups):
+            groups.append({"frame": f, "end": f, "changes": []})
+    groups.sort(key=lambda g: g["frame"])
+
+    runs = sorted(r for r in lag_runs(export["frames"], top=10 ** 9) if r[1] >= lag_min)
+    shots = list_shots(export["folder"])
+    shot_frames = [s["frame"] for s in shots]
+    for g in groups:
+        near = [r for r in runs if g["frame"] - 10 <= r[0] <= g["end"] + 60]
+        g["lag"] = max((r[1] for r in near), default=0)
+        dark = any(g["frame"] - cluster <= f <= g["end"] + cluster for f in fade_frames)
+        if not g["changes"]:
+            g["guess"] = "unexplained fade"
+        elif g["lag"]:
+            g["guess"] = "load"
+        else:
+            g["guess"] = "fade" if dark else "instant"
+        i = bisect.bisect_left(shot_frames, g["frame"])
+        g["shot_before"] = shots[i - 1]["file"] if i > 0 else None
+        after = [s for s in shots[i:] if s["frame"] <= g["end"] + 200]
+        changed = [s for s in after if s["reason"].startswith("change")]
+        g["shot_after"] = (changed or after or [None])[0]
+        if g["shot_after"]:
+            g["shot_after"] = g["shot_after"]["file"]
+    return groups
+
+
 def snapshot_hash(folder, snap):
     """SHA-1 of one snapshot file. Returns: hex string, or None if missing."""
     path = os.path.join(folder, snap["file"])
@@ -673,6 +747,18 @@ def brightness(path):
     return total / max(1, width * height)
 
 
+def measure_shots(folder, shots):
+    """Add "brightness" (rounded to 0.1) to each screenshot record.
+
+    Returns: the median brightness, or 0.0 for an empty list.
+    Requires: brightness(); the screenshot files in `folder`.
+    """
+    for s in shots:
+        s["brightness"] = round(brightness(os.path.join(folder, s["file"])), 1)
+    values = sorted(s["brightness"] for s in shots)
+    return values[len(values) // 2] if values else 0.0
+
+
 def cmd_shots(args):
     """Screenshots with their mean brightness; --dark lists only dips (fades,
     black transition screens) below a fraction of the median. Returns: None."""
@@ -680,10 +766,7 @@ def cmd_shots(args):
     if not shots:
         _emit(args, [], ["no screenshots in that range"])
         return
-    for s in shots:
-        s["brightness"] = round(brightness(os.path.join(args.export, s["file"])), 1)
-    values = sorted(s["brightness"] for s in shots)
-    median = values[len(values) // 2]
+    median = measure_shots(args.export, shots)
     limit = median * args.dark if args.dark is not None else None
     rows = [s for s in shots if limit is None or s["brightness"] <= limit]
     shown = rows[:args.limit]
@@ -694,6 +777,36 @@ def cmd_shots(args):
     if len(rows) > len(shown):
         lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
     _emit(args, rows, lines)
+
+
+def cmd_events(args):
+    """Transitions grouped from named watched variables, with lag, screenshots
+    and a guessed method. Returns: exit code 0, or 1 when a source wasn't watched."""
+    e = load(args.export)
+    sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
+    fades = None
+    if args.fades is not None:
+        shots = list_shots(args.export)
+        median = measure_shots(args.export, shots)
+        fades = [s["frame"] for s in shots if s["brightness"] <= median * args.fades]
+    try:
+        rows = events(e, sources, cluster=args.cluster, lag_min=args.lag_min, fades=fades)
+    except ValueError as err:
+        print(err)
+        return 1
+    rows = [r for r in rows if args.start <= r["frame"] <= args.end]
+    counts = {}
+    for r in rows:
+        counts[r["guess"]] = counts.get(r["guess"], 0) + 1
+    lines = [f"{len(rows)} events: " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))]
+    for r in rows[:args.limit]:
+        what = "; ".join(f"{c['source']} {c['old']:0{2 * c['width']}X}->{c['new']:0{2 * c['width']}X}"
+                         + (f" pc {','.join(c['pcs'])}" if c["pcs"] else "") for c in r["changes"]) or "-"
+        lines.append(f"  f{r['frame']:>7}  {r['guess']:<16} lag {r['lag']:>3}  {what}")
+    if len(rows) > args.limit:
+        lines.append(f"  ... {len(rows) - args.limit} more (raise --limit or use --json)")
+    _emit(args, rows, lines)
+    return 0
 
 
 def cmd_compare(args):
@@ -797,6 +910,21 @@ def main(argv=None):
     x.add_argument("--limit", type=int, default=40)
     common(x)
     x.set_defaults(fn=cmd_execs)
+
+    ev = sub.add_parser("events", help="transitions (doors, room loads, fades) from named watched variables")
+    ev.add_argument("export")
+    ev.add_argument("--source", nargs=3, action="append", required=True, metavar=("NAME", "ADDRESS", "WIDTH"),
+                    help="a watched variable that changes at transitions, e.g. room 0xC3EF 3 (repeatable)")
+    ev.add_argument("--fades", type=float, metavar="FRACTION",
+                    help="also use screenshots at or below this fraction of the median brightness (e.g. 0.5); "
+                         "dark ones no change explains are listed as unexplained fades")
+    ev.add_argument("--cluster", type=int, default=60, help="changes this many frames apart join one event")
+    ev.add_argument("--lag-min", type=int, default=5, help="shortest lag run that counts as a load")
+    ev.add_argument("--from", dest="start", type=int, default=0)
+    ev.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    ev.add_argument("--limit", type=int, default=40)
+    common(ev)
+    ev.set_defaults(fn=cmd_events)
 
     sh = sub.add_parser("shots", help="screenshots with mean brightness; --dark finds fades")
     sh.add_argument("export")
