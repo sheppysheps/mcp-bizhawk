@@ -30,7 +30,10 @@ The fork has added so far:
 - **Debugging:** `add/remove/list_breakpoint(s)`, `get_breakpoint_hits` and `get_registers`. These are logging breakpoints that capture registers, stack words and extra memory such as the current ROM bank.
 - **Lifecycle:** `launch` and `close`.
 - **Opt-in sandboxed `eval_lua`** behind a consent dialog and the `BIZHAWK_EVAL_LUA` config switch.
-- **Tests** in CI.
+- **Research capabilities** (roadmap steps 1-2½ below): memory snapshots and compare, byte-pattern and relative search, memory dumps to files.
+- **Movie research for BizHawk 1.x** ([lua/legacy/movie_recorder.lua](../lua/legacy/movie_recorder.lua) and the [`movie-research`](../skills/movie-research/SKILL.md) skill): records what a movie does frame by frame to files (lag, input, snapshots, screenshots, watched writes with the writer's registers, checkpoint savestates), for movies that only sync on old BizHawk versions, which have no socket API. `movie_export.py` analyses the captures offline.
+- **Skills:** [`tile-graphics`](../skills/tile-graphics/SKILL.md) and [`movie-research`](../skills/movie-research/SKILL.md).
+- **Tests** in CI (Node, plus the legacy Lua spec on Lua 5.1 and 5.4, plus the skills' Python tests).
 
 Corrections to upstream's docs, learned the hard way:
 - BizHawk 2.11's socket **only** exists when EmuHawk starts with `--socket_ip` and `--socket_port`. Neither the menus nor Lua can create it. SCOPE.md rated this risk "Low".
@@ -41,8 +44,8 @@ Corrections to upstream's docs, learned the hard way:
 | # | Workflow | Already possible | Missing capability |
 |---|---|---|---|
 | 1 | **RAM search with controls.** Do an action from a savestate, search for changed, unchanged, increased or decreased values, and rerun the same savestate *without* the action as a control. | Savestates plus `play_input_sequence` give exact, repeatable runs, which is the control half. `search_memory` handles values you already know. | ✅ Done: `snapshot_memory` and `compare_snapshots`. Multi-level pointer scans can come later. |
-| 2 | **ROM structure mapping.** Banks, headers and file structures; marking data regions so tracing never treats them as code. | The ROM is a file the agent can read itself. Ghidra gives segments, strings and disassembly. `read_range` reads any domain, and breakpoints show what code touches. | **Execution coverage map:** record which ROM addresses (and banks) actually run as code during play, using `on_bus_exec_any`. That's the runtime fact static tools can't provide. Byte-pattern search ✅ done (`bizhawk_search_bytes`). |
-| 3 | **Text extraction by speaker.** | Static table discovery can run on the ROM file. Read breakpoints with `capture` show the text routine, its pointer and the object that triggered it. VRAM and OAM reads and screenshots confirm what's on screen. | ✅ Relative search done (`bizhawk_search_bytes` mode `relative`). Sorting lines by speaker is agent work built from breakpoint captures. |
+| 2 | **ROM structure mapping.** Banks, headers and file structures; marking data regions so tracing never treats them as code. | The ROM is a file the agent can read itself. Ghidra gives segments, strings and disassembly. `read_range` reads any domain, and breakpoints show what code touches. | **Execution coverage map:** record which ROM addresses (and banks) actually run as code during play, using `on_bus_exec_any`. That's the runtime fact static tools can't provide (plan item B7). Byte-pattern search ✅ done (`bizhawk_search_bytes`). From movies: the writer PCs and registers in recorder captures already point at the routines and tables involved. |
+| 3 | **Text extraction by speaker.** | Static table discovery can run on the ROM file. Read breakpoints with `capture` show the text routine, its pointer and the object that triggered it. VRAM and OAM reads and screenshots confirm what's on screen. | ✅ Relative search done (`bizhawk_search_bytes` mode `relative`). Sorting lines by speaker is agent work built from breakpoint captures. From movies: watching the game's text cursor variable logs every string a run shows, with its frame (see the `movie-research` skill). |
 | 4 | **Instruction replication** to 95% confidence (Wilson lower bound; see [TESTING.md](TESTING.md)). | Breakpoints on a routine's entry with `capture` log real input states during play. | **Exit capture:** pair each entry with the matching return and the outputs, so normal gameplay produces (input, output) test cases. A **register write** tool (`emu.setregister`) for setting up tests. Driving a routine with made-up inputs mid-frame comes later and needs its own security review. |
 | 5 | **Live helper scripts** (overlays, trackers, hitbox drawers), only when a human is truly needed. | `eval_lua` can draw with `gui.*`, but only for one frame. | **Persistent per-frame sandboxed scripts:** register, list and remove scripts that run every frame, behind the same consent gate, with a per-frame budget, and switched off automatically after errors. |
 
@@ -53,19 +56,20 @@ Some things stay out of the server on purpose:
 
 ## Roadmap
 
-Each step is a branch (they all change the protocol), comes with tests at Layers 1 and 2, and gets a security review where marked.
+Each step is a branch (they all change the protocol), comes with tests at Layers 1 and 2, and gets a security review where marked. Steps 3-7 are worked out in detail, together with the movie tools, in [the research tool upgrades plan](plans/2026-10-21-research-tool-upgrades.md); its item numbers are given below, and its status line is the current one.
 
 | Step | Capability | Unblocks | Notes |
 |---|---|---|---|
 | 1 ✅ | **Memory snapshots and compare** (done; see RECIPES 10): `snapshot_memory` (named, per domain and range, stored in the bridge as compact strings) and `compare_snapshots` (changed, unchanged, increased, decreased, equal to, changed by N; 8/16/32-bit, signed or not; narrows existing candidates) | W1, and pointer hunting in general | Pure reads. Return counts plus a capped candidate list. Set a total memory cap for snapshots. |
 | 2 ✅ | **Byte-pattern and relative search** over any domain (done: `bizhawk_search_bytes`, RECIPES 11) | W2, W3 | Pure reads. Wildcards (`??`). Relative mode for unknown text encodings. |
 | 2½ ✅ | **Memory dumps to files** (done: `bizhawk_dump_memory`, fenced to `BIZHAWK_DUMP_DIR`) | External decoders and skills (e.g. tile and sprite extraction) | Writes files, so it's limited to a folder the user configures. |
-| 3 | **Execution coverage map** over N frames, with bank capture | W2, W4 | `on_bus_exec_any` is very slow per instruction, so cap the frames, report the slowdown, and return merged address ranges. |
-| 4 | **Breakpoint upgrades:** capture memory ranges, exit capture (return pairing), and a `set_register` tool | W4 | The register write is a normal write tool, like memory writes. |
-| 5 | **Persistent per-frame sandboxed scripts** | W5 | Same consent gate and sandbox. Security review. |
-| 6 | **Fixture ROM and Layer 3 integration tests** ([TESTING.md](TESTING.md)) | Proves steps 1–5 against known answers | RGBDS build, redistributable. |
-| 7 | **Catalog conventions (a doc, not a tool):** a shared format for findings (address, domain, bank, width, name, evidence, confidence) that maps onto Ghidra labels and `function BB:AAAA name` annotation files | Every workflow | Lets agents in different sessions build on each other's results. |
+| 3 | **Execution coverage map** over N frames, with bank capture (plan B7) | W2, W4 | `on_bus_exec_any` is very slow per instruction, so cap the frames, report the slowdown, and return merged address ranges. Measure the cost on 2.x first; on 1.11.7's Gambatte execute callbacks never fire. |
+| 4 | **Breakpoint upgrades:** unique-writer mode, reset on load, wide range capture, exit capture (return pairing), a `set_register` tool, triggered writes (plan B1-B6) | W4 | The register write is a normal write tool, like memory writes. |
+| 5 | **Persistent per-frame sandboxed scripts** | W5 | Same consent gate and sandbox. Security review. Not in the plan yet. |
+| 6 | **Fixture ROM and Layer 3 integration tests** ([TESTING.md](TESTING.md)); a scenario harness for patched ROMs (plan B8) | Proves steps 1–5 against known answers; checks game patches | RGBDS build, redistributable. |
+| 7 | **Catalog conventions (a doc, not a tool):** a shared format for findings (address, domain, bank, width, name, evidence, confidence) that maps onto Ghidra labels and `function BB:AAAA name` annotation files (plan section C) | Every workflow | Lets agents in different sessions build on each other's results. To be agreed with the game repos before it's built. |
+| M ✅ | **Movie research** (plan group A): recorder, `movie_export`, checkpoints, flags from snapshots, `locate` (done, `main`) | Studying long movies that only sync on BizHawk 1.x | Offline: writes files, never talks to the bridge. Next: the labeling station (plan A9). |
 
-Skills (core-agnostic workflows built from these capabilities) live in `skills/`. The first, [`tile-graphics`](../skills/tile-graphics/SKILL.md), covers tile/sprite/palette extraction and was the motivation for `bizhawk_dump_memory`.
+Skills (core-agnostic workflows built from these capabilities) live in `skills/`. The first, [`tile-graphics`](../skills/tile-graphics/SKILL.md), covers tile/sprite/palette extraction and was the motivation for `bizhawk_dump_memory`. The second, [`movie-research`](../skills/movie-research/SKILL.md), reads movie recorder captures.
 
 Later or optional: multi-level pointer scans, read and write coverage, and driving a routine with made-up inputs mid-frame (W4 phase B).

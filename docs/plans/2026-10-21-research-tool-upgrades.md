@@ -1,6 +1,6 @@
 # Plan: research tool upgrades (2026-10-21)
 
-Status: **in progress** (reviewed 2026-10-22: start with group A, one item at a time, the items that help the game repos most first). A1 is built on `feat/movie-tools-2` and waits for its first real pass.
+Status: **in progress** (reviewed 2026-10-22: start with group A, one item at a time, the items that help the game repos most first). Built and on `main`: A1, A1b, A1c, A1d, A3, A3b (`feat/movie-tools-2` merged in `0ce8429`, A3b in `8dbc21b`). Checkpoints are verified on BizHawk 1.11.7: a pass started from one matched the full replay in inputs, lag and every snapshot. Next: A9 (labeling station), then A2 and A5.
 
 The first movie captures (a 284,015-frame Game Boy Color TAS recorded four times on BizHawk 1.11.7) showed what game research needs next: room and door pointers are found by ranking bytes against lag bursts, a "teleport" was found as a block copy, and the writer PCs of watched bytes pointed straight at the routines involved. This plan turns those one-off analysis scripts into tools, and adds the live-emulator capabilities a randomizer project needs. Everything stays game-agnostic: addresses, domains and thresholds come from the user, never from the code.
 
@@ -8,8 +8,8 @@ It also takes in three open dev-master handoffs: **breakpoint upgrades**, the **
 
 ## What exists today
 
-- **Movie recorder** (`lua/legacy/movie_recorder.lua`, BizHawk 1.x, no socket API): per-frame lag and input, memory snapshots (periodic, listed, or after a watched change), screenshots named by reason, write-watches with the writer PC.
-- **`movie_export.py`:** `summary`, `frames`, `writes`, `timeline` and `compare`.
+- **Movie recorder** (`lua/legacy/movie_recorder.lua`, BizHawk 1.x, no socket API): per-frame lag and input, memory snapshots (periodic, listed, in windows, or after a watched change), screenshots named by reason, write-watches with the writer PC and optionally the registers, exec-watches, checkpoint savestates and starting from one.
+- **`movie_export.py`:** `summary`, `frames`, `writes`, `flags`, `locate`, `timeline`, `execs`, `shots` and `compare`.
 - **Live bridge** (BizHawk 2.x): `bizhawk_add_breakpoint` with kinds `read`, `write` and `exec`, short ranges, registers, stack words, extra memory `capture` (e.g. a bank byte) and `max_hits`; snapshots, compare, search and dump.
 
 ## Work items
@@ -24,6 +24,7 @@ It also takes in three open dev-master handoffs: **breakpoint upgrades**, the **
 | A1d | **Checkpoints** (built) | `save_states = <frames>` writes savestates during a pass; `start_state = <file>` loads one at startup so recording starts there. | Late parts of a long movie in seconds instead of replaying it; the starting point for interactive disassembly in the game repos. |
 | A2 | **Writer summary** | `movie_export writers`: per watched address, each distinct writer PC once, with first/last frame and count. | The per-writer deduplication from Shando's tracer, done offline from `writes.tsv` (no recorder change). |
 | A3 | **Bit-level diffs** (built) | `movie_export writes --bits`: for each change, which bits flipped (`+3 -0`). `movie_export flags [--once]`: per-bit history; `--once` lists bits set once and never cleared (pickups, opened doors, story flags) in frame order. | Item, key and door flags are single bits; bytes hide them. |
+| A3b | **Flags from snapshots; locate** (built) | `movie_export flags --snapshots DOMAIN`: the same per-bit history from periodic snapshots, each change between two snapshot frames. `movie_export locate`: where one domain's bytes sit in another at a frame (e.g. the save file in cart RAM inside work RAM). | Finds the flags before their address is known: the save file's live copy is the progress block. |
 | A4 | **Annotations** | A `labels.tsv` next to a capture (`start`, `end`, `label`, `kind` such as `glitch`, `cutscene`, `menu`); `movie_export` shows labels in timelines and can exclude labeled ranges from analysis. | Glitch windows must not be cataloged as normal states, and logic presets need a glitch catalog. |
 | A5 | **`rank`** | Product version of the ad-hoc ranking scripts: score every byte's changes between snapshots against an event list (lag bursts of a chosen length, a watched address's change frames, or labels), with precision, recall and distinct-value counts; restrict to regions; exclude labeled ranges. | Found the room pointer and the teleport record in minutes. Worth a tested command. |
 | A6 | **`events`** | A transition table from a capture: for a watched pointer or block, each change with frame, old and new value, writer PC, the nearest lag burst and the screenshot. | The door-table starting point a randomizer needs. |
@@ -74,7 +75,7 @@ Planned randomizer features from the game side, and which items serve them:
 |---|---|---|
 | Difficulty presets (enemy HP and damage) | The code that reads stat tables | B3, B1, A1 |
 | Skip cutscenes, dialog and fanfares | Code that runs only in those scenes, their flags | B7, A4, A3 |
-| Keysanity | Key counters and door/unlock flag bits | A3, A5 |
+| Keysanity | Key counters and door/unlock flag bits | A3, A3b, A5 |
 | Logic presets (glitch levels) | A glitch catalog with frame ranges | A4, C |
 | Music and sound registers (research only) | The music-ID variable, sound-register writes | A7, A5 |
 | Door randomization | Door tables (one per transition type), exit methods, entry states | A1, A9, B4 |
@@ -83,15 +84,15 @@ Planned randomizer features from the game side, and which items serve them:
 
 ## Suggested order
 
-1. **A1 `exec_watch`**, then a recorder pass on a known copy routine (fast, high value).
-2. **A2-A5** (offline `movie_export` commands; pure Python with unit tests).
+1. ~~**A1 `exec_watch`**, then a recorder pass on a known copy routine~~ (done, with A1b-A1d, A3 and A3b).
+2. **A9**, then **A2, A5** (offline `movie_export` commands; pure Python with unit tests).
 3. **C** (agree the format; small).
 4. **B1, B2, B5** (small bridge changes), then **B3, B4, B6**.
 5. **B8** test harness.
 6. **B7** coverage map (research the callback cost first).
 7. **A6, A7** alongside the research that needs them.
 
-Branches: A items on `feat/movie-tools-2`; B items on `feat/breakpoints` (touches the Node↔Lua protocol, so both sides land together); C as `docs/` first.
+Branches: A items on a `feat/movie-tools-*` branch when they span sessions or change the recorder (`feat/movie-tools-2` is merged), otherwise straight to `main`; B items on `feat/breakpoints` (touches the Node↔Lua protocol, so both sides land together); C as `docs/` first.
 
 ## Porting to modern BizHawk
 
@@ -106,4 +107,4 @@ The recorder targets BizHawk 1.x because the movies studied so far only sync the
 
 - Is the order right, or should B8 (test harness) come earlier?
 - Should A4 labels live in the capture folder (local, game-specific) or in the shared findings format?
-- How long may a coverage-map window be before it's too slow to be useful?
+- How long may a coverage-map window be before it's too slow to be useful? (On BizHawk 1.11.7 with Gambatte, execute callbacks never fire at all; the cost on 2.x is still unmeasured.)
