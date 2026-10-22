@@ -341,6 +341,11 @@ class Export(unittest.TestCase):
         self.assertEqual([(r["frame"], r["guess"]) for r in rows],
                          [(100, "load"), (300, "instant"), (510, "unexplained fade"), (700, "unexplained fade")])
         self.assertEqual([c["source"] for c in rows[0]["changes"]], ["room", "door"])
+        # skip_pcs drops only the listed writer's changes: the door change at
+        # 500 (by 0x5E3F) goes, the one at 105 rides along with the room.
+        rows = movie_export.events(e, [("room", 0xC000, 2), ("door", 0xC100, 1)], skip_pcs={"door": {0x5E3F}})
+        self.assertEqual([(r["frame"], [c["source"] for c in r["changes"]]) for r in rows],
+                         [(100, ["room", "door"]), (300, ["room"])])
         self.assertEqual(movie_export.parse_only_pcs([["door", "0x5E3F,0x5CC0"], ["door", "0x610E"]]),
                          {"door": {0x5E3F, 0x5CC0, 0x610E}})
 

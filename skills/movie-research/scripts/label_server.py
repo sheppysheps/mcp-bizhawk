@@ -131,9 +131,9 @@ def save_labels(folder, data):
     os.replace(tmp, path)
 
 
-def build_events(folder, sources, fades=None, cluster=60, lag_min=5, only_pcs=None):
+def build_events(folder, sources, fades=None, cluster=60, lag_min=5, only_pcs=None, skip_pcs=None):
     """The events the page shows, with values as hex text for display.
-    `only_pcs` is passed to movie_export.events.
+    `only_pcs` and `skip_pcs` are passed to movie_export.events.
 
     Returns: list of event dicts from movie_export.events, each change's
     "old"/"new" also given as "old_hex"/"new_hex" and "key" ("source:VALUE",
@@ -146,7 +146,8 @@ def build_events(folder, sources, fades=None, cluster=60, lag_min=5, only_pcs=No
         shots = movie_export.list_shots(folder)
         median = movie_export.measure_shots(folder, shots)
         dark = [s["frame"] for s in shots if s["brightness"] <= median * fades]
-    rows = movie_export.events(e, sources, cluster=cluster, lag_min=lag_min, fades=dark, only_pcs=only_pcs)
+    rows = movie_export.events(e, sources, cluster=cluster, lag_min=lag_min, fades=dark, only_pcs=only_pcs,
+                               skip_pcs=skip_pcs)
     for r in rows:
         for c in r["changes"]:
             width = 2 * c["width"]
@@ -258,14 +259,14 @@ def make_handler(folder, token, events, port_ref, requires=None):
     return Handler
 
 
-def serve(folder, sources, port=8770, fades=None, token=None, requires=None, only_pcs=None):
+def serve(folder, sources, port=8770, fades=None, token=None, requires=None, only_pcs=None, skip_pcs=None):
     """Start the server (blocking until Ctrl+C) on 127.0.0.1 only.
 
     Returns: None. Prints the URL with the session token.
     Requires: an export folder; a free port (0 picks one).
     """
     token = token or secrets.token_urlsafe(24)
-    events = build_events(folder, sources, fades=fades, only_pcs=only_pcs)
+    events = build_events(folder, sources, fades=fades, only_pcs=only_pcs, skip_pcs=skip_pcs)
     port_ref = [port]
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(folder, token, events, port_ref, requires))
     port_ref[0] = server.server_address[1]
@@ -289,6 +290,8 @@ def main(argv=None):
     p.add_argument("--fades", type=float, metavar="FRACTION", help="also list dark screenshots (see events --fades)")
     p.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
                    help="count a source's changes only from these writer PCs (see events --only-pc)")
+    p.add_argument("--skip-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
+                   help="drop a source's changes made only by these writer PCs (see events --skip-pc)")
     p.add_argument("--port", type=int, default=8770, help="port on 127.0.0.1 (0 picks a free one)")
     p.add_argument("--requires", metavar="LIST",
                    help="comma-separated requirement names shown as checkboxes (abilities, items, story flags), "
@@ -300,7 +303,7 @@ def main(argv=None):
     sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
     requires = [r.strip() for r in (args.requires or "").split(",") if r.strip()]
     serve(args.export, sources, port=args.port, fades=args.fades, requires=requires,
-          only_pcs=movie_export.parse_only_pcs(args.only_pc))
+          only_pcs=movie_export.parse_only_pcs(args.only_pc), skip_pcs=movie_export.parse_only_pcs(args.skip_pc))
     return 0
 
 

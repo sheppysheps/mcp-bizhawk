@@ -370,7 +370,7 @@ def timeline(export, address, width=1, big_endian=False, min_frames=1):
     return merged
 
 
-def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None):
+def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None, skip_pcs=None):
     """Transitions in a capture: changes of named watched variables, grouped.
 
     Each source is (name, address, width), e.g. ("room", 0xC3EF, 3).
@@ -378,7 +378,11 @@ def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None):
     byte that is a room ID when the door code writes it and scratch state
     otherwise); its other changes are dropped, unless they ride along with a
     kept change of another source within `cluster` frames (entering an area
-    sets its first room from the area loader, not from the door code). Changes
+    sets its first room from the area loader, not from the door code).
+    `skip_pcs` is the opposite, and usually the sturdier choice when every
+    level has its own door code: a source's changes made only by these
+    writers (known noise, e.g. a menu routine) are dropped, with the same
+    ride-along exception. Changes
     of all sources within `cluster` frames of the previous change join one
     event. Each event gets the nearest lag burst (a run of at least `lag_min`
     lag frames starting up to 10 frames before and 60 after the first change),
@@ -406,7 +410,9 @@ def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None):
             near = by_frame.get(seg["start"] - 1, []) + by_frame.get(seg["start"], [])
             pcs = sorted({w["pc"] for w in near if int(w["address"], 16) in wanted})
             allowed = (only_pcs or {}).get(name)
-            kept = allowed is None or any(int(pc, 16) in allowed for pc in pcs)
+            skipped = (skip_pcs or {}).get(name, set())
+            kept = (allowed is None or any(int(pc, 16) in allowed for pc in pcs)) and not (
+                pcs and all(int(pc, 16) in skipped for pc in pcs))
             changes.append({"source": name, "frame": seg["start"], "old": prev["value"], "new": seg["value"],
                             "width": width, "pcs": pcs, "kept": kept})
     anchors = [c for c in changes if c["kept"]]
@@ -792,7 +798,7 @@ def cmd_shots(args):
 
 
 def parse_only_pcs(pairs):
-    """Turn --only-pc NAME PCS pairs into {name: {pc, ...}}.
+    """Turn --only-pc / --skip-pc NAME PCS pairs into {name: {pc, ...}}.
 
     Returns: dict, or None when no pairs were given. Raises ValueError on a
     PC that isn't a number.
@@ -818,7 +824,7 @@ def cmd_events(args):
         fades = [s["frame"] for s in shots if s["brightness"] <= median * args.fades]
     try:
         rows = events(e, sources, cluster=args.cluster, lag_min=args.lag_min, fades=fades,
-                      only_pcs=parse_only_pcs(args.only_pc))
+                      only_pcs=parse_only_pcs(args.only_pc), skip_pcs=parse_only_pcs(args.skip_pc))
     except ValueError as err:
         print(err)
         return 1
@@ -949,6 +955,9 @@ def main(argv=None):
     ev.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
                     help="count a source's changes only when one of these writer PCs made them, e.g. "
                          "room 0x5E3F,0x5CC0 (a byte that is scratch state for other code)")
+    ev.add_argument("--skip-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
+                    help="drop a source's changes made only by these writer PCs (known noise such as a menu "
+                         "routine), e.g. room 0x4E0B; sturdier than --only-pc when each level has its own door code")
     ev.add_argument("--cluster", type=int, default=60, help="changes this many frames apart join one event")
     ev.add_argument("--lag-min", type=int, default=5, help="shortest lag run that counts as a load")
     ev.add_argument("--from", dest="start", type=int, default=0)
