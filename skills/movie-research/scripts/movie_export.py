@@ -376,7 +376,9 @@ def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None):
     Each source is (name, address, width), e.g. ("room", 0xC3EF, 3).
     `only_pcs` maps a source name to the writer PCs that count for it (e.g. a
     byte that is a room ID when the door code writes it and scratch state
-    otherwise); its other changes are dropped. Changes
+    otherwise); its other changes are dropped, unless they ride along with a
+    kept change of another source within `cluster` frames (entering an area
+    sets its first room from the area loader, not from the door code). Changes
     of all sources within `cluster` frames of the previous change join one
     event. Each event gets the nearest lag burst (a run of at least `lag_min`
     lag frames starting up to 10 frames before and 60 after the first change),
@@ -404,10 +406,14 @@ def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None):
             near = by_frame.get(seg["start"] - 1, []) + by_frame.get(seg["start"], [])
             pcs = sorted({w["pc"] for w in near if int(w["address"], 16) in wanted})
             allowed = (only_pcs or {}).get(name)
-            if allowed is not None and not any(int(pc, 16) in allowed for pc in pcs):
-                continue
+            kept = allowed is None or any(int(pc, 16) in allowed for pc in pcs)
             changes.append({"source": name, "frame": seg["start"], "old": prev["value"], "new": seg["value"],
-                            "width": width, "pcs": pcs})
+                            "width": width, "pcs": pcs, "kept": kept})
+    anchors = [c for c in changes if c["kept"]]
+    changes = [c for c in changes if c["kept"] or any(
+        a["source"] != c["source"] and abs(a["frame"] - c["frame"]) <= cluster for a in anchors)]
+    for c in changes:
+        del c["kept"]
     changes.sort(key=lambda c: c["frame"])
     fade_frames = sorted(fades or [])
     groups = []

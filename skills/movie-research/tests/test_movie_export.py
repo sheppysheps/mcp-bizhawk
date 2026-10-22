@@ -334,11 +334,13 @@ class Export(unittest.TestCase):
         self.assertEqual(run(["events", f, "--source", "x", "0xD000", "1"])[0], 1)
         # Only door-code writes count for "door": the change at 500 came from
         # another routine, so that event goes (its dark shot stays, unexplained).
+        # The one at 105 also came from another routine, but it rides along
+        # with the room change at 100, so it stays.
         rows = movie_export.events(e, [("room", 0xC000, 2), ("door", 0xC100, 1)], fades=[510, 700],
                                    only_pcs={"door": {0x1234}})
         self.assertEqual([(r["frame"], r["guess"]) for r in rows],
                          [(100, "load"), (300, "instant"), (510, "unexplained fade"), (700, "unexplained fade")])
-        self.assertEqual([c["source"] for c in rows[0]["changes"]], ["room"])
+        self.assertEqual([c["source"] for c in rows[0]["changes"]], ["room", "door"])
         self.assertEqual(movie_export.parse_only_pcs([["door", "0x5E3F,0x5CC0"], ["door", "0x610E"]]),
                          {"door": {0x5E3F, 0x5CC0, 0x610E}})
 
