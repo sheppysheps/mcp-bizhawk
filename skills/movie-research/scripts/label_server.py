@@ -144,8 +144,8 @@ def build_events(folder, sources, fades=None, cluster=60, lag_min=5, only_pcs=No
     dark = None
     if fades is not None:
         shots = movie_export.list_shots(folder)
-        median = movie_export.measure_shots(folder, shots)
-        dark = [s["frame"] for s in shots if s["brightness"] <= median * fades]
+        movie_export.measure_shots(folder, shots)
+        dark = movie_export.dips(shots, fades)
     rows = movie_export.events(e, sources, cluster=cluster, lag_min=lag_min, fades=dark, only_pcs=only_pcs,
                                skip_pcs=skip_pcs)
     for r in rows:

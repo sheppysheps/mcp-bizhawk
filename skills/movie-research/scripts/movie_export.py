@@ -765,16 +765,66 @@ def brightness(path):
     return total / max(1, width * height)
 
 
+BRIGHTNESS_CACHE = "brightness.tsv"
+
+
 def measure_shots(folder, shots):
     """Add "brightness" (rounded to 0.1) to each screenshot record.
 
+    Decoding PNGs in pure Python is slow (minutes for ten thousand shots), so
+    results are kept in brightness.tsv in the export folder and reused while
+    a screenshot's size and modification time are unchanged. That file is the
+    only thing movie_export writes into a capture.
     Returns: the median brightness, or 0.0 for an empty list.
-    Requires: brightness(); the screenshot files in `folder`.
+    Requires: brightness(); the screenshot files in `folder`; write access to
+    `folder` for the cache (skipped silently when it can't be written).
     """
+    cache_path = os.path.join(folder, BRIGHTNESS_CACHE)
+    cache = {}
+    if os.path.exists(cache_path):
+        for r in read_tsv(cache_path):
+            cache[r["file"]] = (r["stamp"], float(r["brightness"]))
+    changed = False
     for s in shots:
-        s["brightness"] = round(brightness(os.path.join(folder, s["file"])), 1)
+        st = os.stat(os.path.join(folder, s["file"]))
+        stamp = f"{st.st_size}:{int(st.st_mtime)}"
+        hit = cache.get(s["file"])
+        if hit and hit[0] == stamp:
+            s["brightness"] = hit[1]
+        else:
+            s["brightness"] = round(brightness(os.path.join(folder, s["file"])), 1)
+            cache[s["file"]] = (stamp, s["brightness"])
+            changed = True
+    if changed:
+        try:
+            with open(cache_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write("file\tstamp\tbrightness\n")
+                for name, (stamp, value) in sorted(cache.items()):
+                    f.write(f"{name}\t{stamp}\t{value}\n")
+        except OSError:
+            pass
     values = sorted(s["brightness"] for s in shots)
     return values[len(values) // 2] if values else 0.0
+
+
+def dips(shots, fraction=0.5, window=4):
+    """Screenshots much darker than their neighbours: fades, not dark rooms.
+
+    A shot is a dip when its brightness is at most `fraction` times the
+    median of the `window` shots on each side of it. A level that is dark
+    throughout has no dips; a fade between two rooms does.
+    Returns: list of the dipping shots' frames, in order.
+    Requires: shots with "brightness" (measure_shots), sorted by frame.
+    """
+    out = []
+    for i, s in enumerate(shots):
+        around = [t["brightness"] for t in shots[max(0, i - window):i] + shots[i + 1:i + 1 + window]]
+        if not around:
+            continue
+        around.sort()
+        if s["brightness"] <= fraction * around[len(around) // 2]:
+            out.append(s["frame"])
+    return out
 
 
 def cmd_shots(args):
@@ -820,8 +870,8 @@ def cmd_events(args):
     fades = None
     if args.fades is not None:
         shots = list_shots(args.export)
-        median = measure_shots(args.export, shots)
-        fades = [s["frame"] for s in shots if s["brightness"] <= median * args.fades]
+        measure_shots(args.export, shots)
+        fades = dips(shots, args.fades)
     try:
         rows = events(e, sources, cluster=args.cluster, lag_min=args.lag_min, fades=fades,
                       only_pcs=parse_only_pcs(args.only_pc), skip_pcs=parse_only_pcs(args.skip_pc))
@@ -950,8 +1000,9 @@ def main(argv=None):
     ev.add_argument("--source", nargs=3, action="append", required=True, metavar=("NAME", "ADDRESS", "WIDTH"),
                     help="a watched variable that changes at transitions, e.g. room 0xC3EF 3 (repeatable)")
     ev.add_argument("--fades", type=float, metavar="FRACTION",
-                    help="also use screenshots at or below this fraction of the median brightness (e.g. 0.5); "
-                         "dark ones no change explains are listed as unexplained fades")
+                    help="also use screenshots at or below this fraction of their neighbours' median brightness "
+                         "(e.g. 0.5): dips, so a dark level isn't one long fade; dips no change explains are "
+                         "listed as unexplained fades")
     ev.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
                     help="count a source's changes only when one of these writer PCs made them, e.g. "
                          "room 0x5E3F,0x5CC0 (a byte that is scratch state for other code)")
