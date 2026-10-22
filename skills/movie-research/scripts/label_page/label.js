@@ -43,12 +43,17 @@ function isLabeled(ev) {
   return Boolean(l && l.kind);
 }
 
+/** Shorten a long hex value to its ends ("77FFFFFF…0000"). Returns: string. */
+function short(hex) {
+  return hex.length > 16 ? `${hex.slice(0, 8)}…${hex.slice(-4)}` : hex;
+}
+
 /** Short text for an event in the list: place names where known. Returns: string. */
 function summary(ev) {
   if (!ev.changes.length) return ev.guess;
   return ev.changes.map((c) => {
     const p = labels.places[c.key];
-    return `${c.source} ${p && p.name ? p.name : c.new_hex}`;
+    return `${c.source} ${p && p.name ? p.name : short(c.new_hex)}`;
   }).join(", ");
 }
 
@@ -117,11 +122,18 @@ function render() {
     const row = document.createElement("label");
     row.className = "change";
     const what = document.createElement("span");
-    what.textContent = `${c.source} ${c.old_hex} → ${c.new_hex}` + (c.pcs.length ? `  (pc ${c.pcs.join(", ")})` : "");
+    // Records (more than 4 bytes) are saved state, not an ID: shorten them and
+    // ask where they lead back to; the full value stays in the tooltip.
+    const record = c.width > 4;
+    what.textContent = `${c.source} ${short(c.old_hex)} → ${short(c.new_hex)}` +
+      (c.pcs.length ? `  (pc ${c.pcs.join(", ")})` : "");
+    what.title = `${c.old_hex} → ${c.new_hex}`;
     const input = document.createElement("input");
     const place = labels.places[c.key] || {};
     input.value = place.name || "";
-    input.placeholder = `name of ${c.source} ${c.new_hex}`;
+    input.placeholder = record
+      ? `${c.source} record (${c.width} bytes): where leaving returns to, if this was an entrance`
+      : `name of ${c.source} ${c.new_hex}; leave empty if it isn't a place`;
     input.addEventListener("input", () => {
       labels.places[c.key] = Object.assign(labels.places[c.key] || {}, { name: input.value });
       queueSave();
@@ -170,8 +182,9 @@ async function start() {
   $("guess-filter").addEventListener("change", () => { current = 0; render(); });
   document.addEventListener("keydown", (e) => {
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
-    if (e.key === "j" && current < shown.length - 1) { current += 1; render(); }
-    if (e.key === "k" && current > 0) { current -= 1; render(); }
+    // The right-hand key goes forward: k next, j previous.
+    if (e.key === "k" && current < shown.length - 1) { current += 1; render(); }
+    if (e.key === "j" && current > 0) { current -= 1; render(); }
   });
 
   const r = await fetch(`/api/events?token=${encodeURIComponent(token)}`);
