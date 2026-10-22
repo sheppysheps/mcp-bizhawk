@@ -101,7 +101,11 @@ class Export(unittest.TestCase):
                                                  "states_saved": "state_f0212000.State"})
         _, text = run(["summary", f])
         self.assertIn("started from checkpoint C:/x/state_f0195000.State at frame 195000", text)
-        self.assertIn("checkpoints saved: state_f0212000.State", text)
+        self.assertIn("checkpoints saved: 1 (state_f0212000.State)", text)
+        many = write_export(self.folder("b"), meta={"started_at_frame": "0", "states_saved": ", ".join(
+            f"state_f{n:07d}.State" for n in range(1000, 9000, 1000))})
+        _, text = run(["summary", many])
+        self.assertIn("checkpoints saved: 8 (state_f0001000.State ... state_f0008000.State)", text)
         self.assertNotIn("WARNING", text)
 
     def test_bit_changes(self):

@@ -386,7 +386,9 @@ def cmd_summary(args):
     elif m.get("started_at_frame") not in (None, "0"):
         lines.append(f"  WARNING: recording started at frame {m['started_at_frame']}, not 0")
     if m.get("states_saved"):
-        lines.append(f"  checkpoints saved: {m['states_saved']}")
+        names = [s.strip() for s in m["states_saved"].split(",") if s.strip()]
+        shown = ", ".join(names) if len(names) <= 4 else f"{names[0]} ... {names[-1]}"
+        lines.append(f"  checkpoints saved: {len(names)} ({shown})")
     _emit(args, data, lines)
 
 
