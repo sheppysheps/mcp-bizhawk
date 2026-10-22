@@ -9,7 +9,7 @@ const OPTIONS = {
          "warp / dance", "cutscene", "death", "other"],
   entry: ["", "standing", "climbing", "crawling", "falling", "swimming", "other"],
 };
-const FIELDS = ["kind", "exit", "entry", "requires", "notes"];
+const FIELDS = ["arrival", "kind", "exit", "entry", "requires", "notes"];
 
 const token = new URLSearchParams(location.search).get("token") || "";
 let events = [];
@@ -96,8 +96,22 @@ function short(hex) {
   return hex.length > 16 ? `${hex.slice(0, 8)}…${hex.slice(-4)}` : hex;
 }
 
-/** Short text for an event in the list: place names where known. Returns: string. */
+/** Offer every "Arrived in" name used so far as a suggestion. Returns: nothing. */
+function refreshArrivalNames() {
+  const names = new Set(Object.values(labels.events).map((l) => (l.arrival || "").trim()).filter(Boolean));
+  const list = $("arrival-names");
+  list.replaceChildren();
+  for (const n of [...names].sort()) {
+    const o = document.createElement("option");
+    o.value = n;
+    list.appendChild(o);
+  }
+}
+
+/** Short text for an event in the list: where it arrives, else place names. Returns: string. */
 function summary(ev) {
+  const l = labels.events[String(ev.frame)];
+  if (l && l.arrival) return `→ ${l.arrival}`;
   if (!ev.changes.length) return ev.guess;
   return ev.changes.map((c) => {
     const p = labels.places[c.key];
@@ -192,6 +206,7 @@ function render() {
   const l = labels.events[String(ev.frame)] || {};
   for (const f of FIELDS) $(f).value = l[f] || "";
   renderRequireBoxes();
+  refreshArrivalNames();
 }
 
 /** Save the labels soon (debounced). Returns: nothing. */
@@ -226,7 +241,7 @@ async function start() {
       if (!ev) return;
       eventLabels(ev)[f] = $(f).value;
       queueSave();
-      if (f === "kind") refreshList();
+      if (f === "kind" || f === "arrival") refreshList();
       if (f === "requires") renderRequireBoxes();
     });
   }
