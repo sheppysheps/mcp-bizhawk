@@ -104,6 +104,34 @@ class Export(unittest.TestCase):
         self.assertIn("checkpoints saved: state_f0212000.State", text)
         self.assertNotIn("WARNING", text)
 
+    def test_bit_changes(self):
+        self.assertEqual(movie_export.bit_changes(0x04, 0x0C), [(3, "set")])
+        self.assertEqual(movie_export.bit_changes(0x81, 0x02), [(0, "cleared"), (1, "set"), (7, "cleared")])
+        self.assertEqual(movie_export.bits_text(0x81, 0x02), "-0 +1 -7")
+        self.assertEqual(movie_export.bit_changes(5, 5), [])
+
+    def test_writes_with_bits(self):
+        f = write_export(self.folder("a"), writes=[(1, 0xD000, 0, 0, "init"), (5, 0xD000, 0, 8, "0x4000")])
+        _, text = run(["writes", f, "--bits"])
+        self.assertIn("0 -> 8    pc 0x4000  bits +3", text)
+
+    def test_flags_once_finds_pickups(self):
+        ws = [(0, 0xD000, 0x01, 0x01, "init"), (0, 0xD001, 0, 0, "init"),
+              (10, 0xD000, 0x01, 0x05, "0x4000"),   # bit 2 set once: a pickup
+              (20, 0xD001, 0x00, 0x80, "0x4100"),   # bit 7 set ...
+              (30, 0xD001, 0x80, 0x00, "0x4100"),   # ... and cleared: a toggle, not a pickup
+              (40, 0xD000, 0x05, 0x04, "0x4200")]   # bit 0 was set at start, cleared now
+        f = write_export(self.folder("a"), frames=50, writes=ws)
+        rows = movie_export.flag_bits(movie_export.load(f)["writes"])
+        self.assertEqual([(r["address"], r["bit"]) for r in rows], [("0xD000", 2), ("0xD001", 7), ("0xD000", 0)])
+        _, text = run(["flags", f, "--once"])
+        self.assertIn("1 bits set once and never cleared", text)
+        self.assertIn("0xD000 bit 2  first set      10  sets   1  clears   0  0->1", text)
+        self.assertNotIn("bit 7", text)
+        _, ranged = run(["flags", f, "--range", "0xD001", "1"])
+        self.assertIn("0xD001 bit 7", ranged)
+        self.assertNotIn("0xD000", ranged)
+
     def test_writes_filter_and_limit(self):
         ws = [(n, 0xC000 + (n % 2), n, n + 1, "0x0150") for n in range(1, 9)]
         f = write_export(self.folder("a"), writes=ws)

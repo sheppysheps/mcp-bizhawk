@@ -49,7 +49,8 @@ Run from `skills/movie-research/scripts/`:
 ```
 python movie_export.py summary <out>                       # totals, lag runs, warnings
 python movie_export.py frames  <out> --from 140 --to 160   # lag flags and inputs per frame
-python movie_export.py writes  <out> --address 0xC0A0      # who wrote this byte, when, which value
+python movie_export.py writes  <out> --address 0xC0A0      # who wrote this byte, when, which value (--bits: which bits)
+python movie_export.py flags   <out> --range 0xD000 0x40 --once   # bits set once and never cleared: pickups, flags
 python movie_export.py timeline <out> --address 0xC9F9 --width 2 --unique   # one row per room/map seen
 python movie_export.py compare <outA> <outB>               # first divergence between two recordings
 python movie_export.py execs   <out> --address 0x1234 --group HL,DE,stack0   # distinct register values when code ran
@@ -80,6 +81,7 @@ Add `--json <file>` to keep a full result. Long lists are truncated on screen wi
 - **Study a late part of a long movie quickly.** A movie is only inputs, so the game state at frame N exists only after playing frames 0 to N-1; cutting the input log doesn't skip anything. Use checkpoints instead: one pass with `save_states = <frames>` writes savestates, and later passes set `start_state` to one of them. In read-only playback BizHawk continues the movie from the loaded frame. Confirm a checkpoint once: record the same window from frame 0 and from the state, and `compare` must report them identical.
 - **When does an event happen?** Snapshot every N frames, find the two snapshots it falls between (by screenshot or a known RAM value), then snapshot every frame in that gap.
 - **Which byte is a flag or counter?** Diff snapshots from just before and just after the event, then `watch` the candidate addresses on a second pass: `writes` shows the exact frame, the old and new values, and the PC of the code that wrote it (a lead into the disassembly).
+- **Which bit is an item, key or door flag?** Games pack these into single bits, so a byte going 0x04 → 0x0C is really "bit 3 set". Watch the candidate range for a whole run, then `flags --once` lists every bit that started clear, was set exactly once and never cleared, in frame order: the run's collected items, opened doors and story flags. `writes --bits` shows the flipped bits next to each change. Bits that toggle back and forth are states (a door currently open, an ability in use), not pickups. Match each first-set frame with its screenshot to name it.
 - **Known values are anchors.** Glitches leave predictable, abnormal values (a counter underflowing to 255, money going up when buying). Read the run's submission notes first: they say which glitches happen where, and those frames should be flagged, not treated as normal game behavior.
 
 ## Caveats

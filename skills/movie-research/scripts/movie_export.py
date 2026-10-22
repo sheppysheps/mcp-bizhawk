@@ -6,7 +6,10 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
 
   summary  <export>                  totals, lag runs, snapshots, write count
   frames   <export> --from N --to M  the per-frame rows (frame, lag, input)
-  writes   <export> [--address A]    watched writes (frame, address, old, new, pc)
+  writes   <export> [--address A]    watched writes (frame, address, old, new, pc);
+                                     --bits shows which bits flipped
+  flags    <export> [--once]         per-bit history of watched bytes; --once lists
+                                     bits set once and never cleared (pickups, flags)
   timeline <export> --address A      segments by a watched variable, e.g. the current
                                      room, with a snapshot frame for each
   execs    <export> [--group HL,DE]  exec-watch hits: registers each time a watched
@@ -143,6 +146,56 @@ def group_execs(execs, fields, big_endian=False):
         g["count"] += 1
         g["last_frame"] = h["frame"]
     return sorted(groups.values(), key=lambda g: g["first_frame"])
+
+
+def bit_changes(old, new):
+    """Which bits flipped between two byte values.
+
+    Returns: list of (bit, "set" or "cleared"), lowest bit first.
+    Requires: nothing.
+    """
+    diff = (old ^ new) & 0xFF
+    return [(b, "set" if new >> b & 1 else "cleared") for b in range(8) if diff >> b & 1]
+
+
+def bits_text(old, new):
+    """Short form of bit_changes: "+3 -0" (bit 3 set, bit 0 cleared). Returns: str."""
+    return " ".join(("+" if kind == "set" else "-") + str(b) for b, kind in bit_changes(old, new))
+
+
+def flag_bits(writes, addresses=None):
+    """Per-bit history of watched bytes, from writes.tsv rows.
+
+    "init" rows give each byte's starting value. Returns: list of dicts
+    {"address", "bit", "initial", "final", "sets", "clears", "first_set",
+    "set_frames"}, one per bit that changed, ordered by first change.
+    Requires: nothing.
+    """
+    state, out = {}, {}
+    for w in writes:
+        a = int(w["address"], 16)
+        if addresses is not None and a not in addresses:
+            continue
+        if w["pc"] == "init":
+            state[a] = w["new"]
+            continue
+        old = state.get(a, w["old"])
+        for b, kind in bit_changes(old, w["new"]):
+            rec = out.get((a, b))
+            if rec is None:
+                rec = out[(a, b)] = {"address": f"0x{a:04X}", "bit": b, "initial": old >> b & 1, "sets": 0,
+                                     "clears": 0, "first_set": None, "set_frames": [], "first_change": w["frame"]}
+            if kind == "set":
+                rec["sets"] += 1
+                rec["set_frames"].append(w["frame"])
+                if rec["first_set"] is None:
+                    rec["first_set"] = w["frame"]
+            else:
+                rec["clears"] += 1
+        state[a] = w["new"]
+    for (a, b), rec in out.items():
+        rec["final"] = state.get(a, 0) >> b & 1
+    return sorted(out.values(), key=lambda r: (r["first_change"], int(r["address"], 16), r["bit"]))
 
 
 def lag_runs(frames, top=5):
@@ -393,12 +446,41 @@ def cmd_writes(args):
     want = None if args.address is None else int(args.address, 0)
     rows = [w for w in e["writes"] if (want is None or int(w["address"], 16) == want)
             and args.start <= w["frame"] <= args.end]
+    if args.bits:
+        for w in rows:
+            w["bits"] = bits_text(w["old"], w["new"]) if w["pc"] != "init" else ""
     shown = rows[:args.limit]
-    lines = [f"{w['frame']:>8}  {w['address']}  {w['old']:>3} -> {w['new']:<3}  pc {w['pc']}" for w in shown]
+    lines = [f"{w['frame']:>8}  {w['address']}  {w['old']:>3} -> {w['new']:<3}  pc {w['pc']}"
+             + (f"  bits {w['bits']}" if args.bits and w["bits"] else "") for w in shown]
     if len(rows) > len(shown):
         lines.append(f"... {len(rows) - len(shown)} more writes (raise --limit or use --json)")
     if not rows:
         lines.append("no matching writes")
+    _emit(args, rows, lines)
+
+
+def cmd_flags(args):
+    """Per-bit history of watched bytes; --once keeps bits set exactly once and
+    never cleared (collected items, opened doors, story flags). Returns: None."""
+    e = load(args.export)
+    addresses = None
+    if args.address:
+        addresses = {int(args.address, 0)}
+    elif args.range:
+        start, length = int(args.range[0], 0), int(args.range[1], 0)
+        addresses = set(range(start, start + length))
+    rows = flag_bits([w for w in e["writes"] if w["frame"] <= args.end], addresses)
+    if args.once:
+        rows = [r for r in rows if r["sets"] == 1 and r["clears"] == 0 and r["initial"] == 0]
+    rows = [r for r in rows if r["first_change"] >= args.start]
+    shown = rows[:args.limit]
+    lines = [f"{len(rows)} bits" + (" set once and never cleared" if args.once else " changed")]
+    lines += [f"  {r['address']} bit {r['bit']}  first set {r['first_set'] if r['first_set'] is not None else '-':>7}  "
+              f"sets {r['sets']:>3}  clears {r['clears']:>3}  {r['initial']}->{r['final']}" for r in shown]
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
+    if not e["writes"]:
+        lines.append("  (no writes.tsv rows: watch the flag range in the recorder config)")
     _emit(args, rows, lines)
 
 
@@ -537,8 +619,21 @@ def main(argv=None):
     w.add_argument("--from", dest="start", type=int, default=0)
     w.add_argument("--to", dest="end", type=int, default=10 ** 9)
     w.add_argument("--limit", type=int, default=40)
+    w.add_argument("--bits", action="store_true", help="also show which bits flipped (+3 set, -0 cleared)")
     common(w)
     w.set_defaults(fn=cmd_writes)
+
+    fl = sub.add_parser("flags", help="per-bit history of watched bytes (items, keys, door and story flags)")
+    fl.add_argument("export")
+    fl.add_argument("--address", help="one watched byte, e.g. 0xD000")
+    fl.add_argument("--range", nargs=2, metavar=("START", "LENGTH"), help="a watched range, e.g. 0xD000 0x40")
+    fl.add_argument("--once", action="store_true",
+                    help="only bits that start clear, are set exactly once and never cleared")
+    fl.add_argument("--from", dest="start", type=int, default=0)
+    fl.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    fl.add_argument("--limit", type=int, default=60)
+    common(fl)
+    fl.set_defaults(fn=cmd_flags)
 
     t = sub.add_parser("timeline", help="segments of the movie by a watched variable (e.g. the current room)")
     t.add_argument("export")
