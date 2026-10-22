@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Movie research: registers, windows, flags and checkpoints.** Watched
+  writes can log the CPU registers, stack words and chosen bytes at the
+  moment of the write (`watch ... registers`), which shows where a copy
+  routine reads from; `exec_watch` does the same when chosen code runs, on
+  cores that fire execute callbacks (BizHawk 1.11.7's Gambatte does not).
+  `snapshot_range` takes dense snapshots in a window and `stop_after` ends a
+  pass early. `save_states` / `save_states_every` write checkpoint
+  savestates, and `start_state` starts a later pass from one: verified on
+  1.11.7, a pass started from a checkpoint matched the full replay in inputs,
+  lag and every memory snapshot. `movie_export.py` adds `execs` (with
+  `--writes` and register grouping), `writes --bits`, `flags` (first set and
+  cleared frame of each bit, for item and event flags) and `shots --dark`
+  (finds fades by screenshot brightness).
+
 - **Movie research for BizHawk 1.x** (`lua/legacy/movie_recorder.lua`, the
   `skills/movie-research` skill): records what a movie does, frame by frame,
   on BizHawk builds without a socket API (tested on 1.11.7, Lua 5.1). It

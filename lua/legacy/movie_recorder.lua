@@ -30,13 +30,16 @@
 -- SYSTEM ACCESS (why, and the limits): this file writes files with `io`,
 -- because BizHawk 1.x has no other way to get data out. It only writes inside
 -- the configured `out` folder, using fixed file names, plus its own
--- movie_recorder.log next to the script (stage log); it never reads or runs
--- other files, never uses `os.execute`, `luanet` or the network, and never
--- executes its config (the config is parsed as plain `key = value` text).
+-- movie_recorder.log next to the script (stage log). Savestates go through
+-- BizHawk's own savestate API: `save_states` writes state_f<frame>.State into
+-- `out`, and `start_state` loads the one file the config names (a checkpoint
+-- made during the same movie). It never reads or runs other files, never uses
+-- `os.execute`, `luanet` or the network, and never executes its config (the
+-- config is parsed as plain `key = value` text).
 -- BizHawk 1.x Lua is NOT sandboxed: only run scripts you have reviewed.
 
 local M = {}
-M.VERSION = "8"
+M.VERSION = "14"
 
 -- ── Pure helpers (unit-tested on stock Lua; no BizHawk needed) ───────────
 
@@ -60,14 +63,22 @@ end
 
 --- Parse the recorder config: `key = value` lines, `#` comments.
 --- Keys: out (required), domains, snapshot_every, snapshot_frames,
---- screenshots, watch (repeatable: "<start> <length>" on the System Bus),
+--- snapshot_range (repeatable: "<start> <end> <step>": snapshot every <step>
+--- frames from <start> to <end>, for dense coverage of a window), stop_after
+--- (end the recording after this frame; 0 = play to the end), save_states
+--- (frames at which to save a checkpoint savestate into `out`), save_states_every
+--- (also save one every N frames; 0 = off; ~3.8 MB each on 1.11.7 for a long movie), start_state
+--- (a checkpoint to load at startup, so recording starts there), screenshots, watch (repeatable: "<start> <length>" on the System Bus),
 --- snapshot_on_change (repeatable: "<start> <length> [delay]": watch these
 --- bytes AND snapshot `delay` frames after any of them changes, default 30,
 --- e.g. a "current room" variable, so each room gets a picture once drawn),
 --- max_watch_bytes, turbo, exit_at_end, flush_every, progress_every (print a
 --- progress line to the Lua Console every N frames; 0 = off), heartbeat_every
 --- (write a line to movie_recorder.log only, every N frames, to locate a hang;
---- 0 = off), trace_snapshots (log each snapshot step; default true).
+--- 0 = off), trace_snapshots (log each snapshot step; default true),
+--- exec_watch (repeatable: "<address> [stack <words>] [capture <start> <length>]
+--- [max <hits>]": log registers each time the address executes; see
+--- M.parse_exec_watch).
 --- @return config table, or nil + error message (with the line number).
 --- @requires Nothing.
 function M.parse_config(text)
@@ -75,7 +86,8 @@ function M.parse_config(text)
         out = nil, domains = {}, snapshot_every = 0, snapshot_frames = {},
         screenshots = true, watch = {}, on_change = {}, max_watch_bytes = 4096,
         turbo = true, exit_at_end = false, flush_every = 600, progress_every = 10000,
-        heartbeat_every = 0, trace_snapshots = true,
+        heartbeat_every = 0, trace_snapshots = true, exec = {}, snapshot_ranges = {}, stop_after = 0,
+        save_states = {}, save_states_every = 0, start_state = nil,
     }
     local function bool(v, line)
         v = v:lower()
@@ -93,11 +105,29 @@ function M.parse_config(text)
                 if not key then error("line " .. line .. ": expected 'key = value'", 0) end
                 if key == "out" then
                     cfg.out = (value:gsub("\\", "/"):gsub("/+$", ""))
+                elseif key == "start_state" then
+                    if value == "" then error("line " .. line .. ": start_state needs a savestate file path", 0) end
+                    cfg.start_state = (value:gsub("\\", "/"))
+                elseif key == "save_states" then
+                    for f in value:gmatch("[^,]+") do
+                        local n = M.parse_int(f)
+                        if not n or n < 1 then error("line " .. line .. ": bad save_states frame '" .. M.trim(f) .. "'", 0) end
+                        cfg.save_states[n] = true
+                    end
                 elseif key == "domains" then
                     for d in value:gmatch("[^,]+") do
                         local name = M.trim(d)
                         if name ~= "" then cfg.domains[#cfg.domains + 1] = name end
                     end
+                elseif key == "snapshot_range" then
+                    local a, b, c = value:match("^(%S+)%s+(%S+)%s+(%S+)$")
+                    local first, last = a and M.parse_int(a), b and M.parse_int(b)
+                    local step = c and M.parse_int(c)
+                    if not first or not last or not step or step < 1 or last < first then
+                        error("line " .. line .. ": snapshot_range needs '<start> <end> <step>' with "
+                            .. "start <= end and step >= 1, e.g. 195800 198300 10", 0)
+                    end
+                    cfg.snapshot_ranges[#cfg.snapshot_ranges + 1] = { start = first, stop = last, step = step }
                 elseif key == "snapshot_frames" then
                     for f in value:gmatch("[^,]+") do
                         local n = M.parse_int(f)
@@ -105,12 +135,9 @@ function M.parse_config(text)
                         cfg.snapshot_frames[n] = true
                     end
                 elseif key == "watch" then
-                    local a, b = value:match("^(%S+)%s+(%S+)$")
-                    local start, len = a and M.parse_int(a), b and M.parse_int(b)
-                    if not start or not len or len < 1 then
-                        error("line " .. line .. ": watch needs '<start> <length>', e.g. 0xC000 0x100", 0)
-                    end
-                    cfg.watch[#cfg.watch + 1] = { start = start, length = len }
+                    local w, werr = M.parse_watch(value)
+                    if not w then error("line " .. line .. ": " .. werr, 0) end
+                    cfg.watch[#cfg.watch + 1] = w
                 elseif key == "snapshot_on_change" then
                     local a, b, c = value:match("^(%S+)%s+(%S+)%s*(%S*)$")
                     local start, len = a and M.parse_int(a), b and M.parse_int(b)
@@ -120,8 +147,16 @@ function M.parse_config(text)
                             .. "e.g. 0xC9F9 2 30", 0)
                     end
                     cfg.on_change[#cfg.on_change + 1] = { start = start, length = len, delay = delay }
+                elseif key == "exec_watch" then
+                    local w, werr = M.parse_exec_watch(value)
+                    if not w then error("line " .. line .. ": " .. werr, 0) end
+                    if #cfg.exec >= M.EXEC_MAX_WATCHES then
+                        error(("line %d: at most %d exec_watch lines"):format(line, M.EXEC_MAX_WATCHES), 0)
+                    end
+                    cfg.exec[#cfg.exec + 1] = w
                 elseif key == "snapshot_every" or key == "max_watch_bytes" or key == "flush_every"
-                    or key == "progress_every" or key == "heartbeat_every" then
+                    or key == "progress_every" or key == "heartbeat_every" or key == "stop_after"
+                    or key == "save_states_every" then
                     local n = M.parse_int(value)
                     if not n then error("line " .. line .. ": " .. key .. " needs a whole number", 0) end
                     cfg[key] = n
@@ -146,15 +181,146 @@ function M.parse_config(text)
     return cfg
 end
 
+-- Limits for exec_watch: each watch is a callback on every execution of its
+-- address, and each hit reads registers and memory, so keep them bounded.
+M.EXEC_MAX_WATCHES = 32
+M.EXEC_MAX_STACK = 16      -- stack words per hit
+M.EXEC_MAX_CAPTURE = 64    -- captured bytes per range
+M.EXEC_DEFAULT_MAX = 1000  -- hits logged per address (the rest are counted)
+
+--- Parse the hit options shared by exec_watch and register-logging watch
+--- lines, starting at words[i]: "registers" (a flag, watch only), "stack
+--- <words>", "capture <start> <length>" (repeatable), "max <hits>". `stack`
+--- reads that many 2-byte words at the SP register (the return addresses, i.e.
+--- who called the code); `capture` reads System Bus bytes (e.g. a game's
+--- "current ROM bank" variable); `max` caps logged hits (default EXEC_DEFAULT_MAX).
+--- @return options table {stack, captures = {{start, length}...}, max, any}
+---         (`any` is true when an option was given), or nil + error text.
+--- @requires Nothing.
+function M.parse_hit_options(words, i, what, allow_registers)
+    local o = { stack = 0, captures = {}, max = M.EXEC_DEFAULT_MAX, any = false }
+    while i <= #words do
+        local opt = words[i]:lower()
+        if opt == "registers" and allow_registers then
+            i = i + 1
+        elseif opt == "stack" then
+            local n = words[i + 1] and M.parse_int(words[i + 1])
+            if not n or n > M.EXEC_MAX_STACK then
+                return nil, ("%s: stack needs a word count 0..%d"):format(what, M.EXEC_MAX_STACK)
+            end
+            o.stack, i = n, i + 2
+        elseif opt == "capture" then
+            local s = words[i + 1] and M.parse_int(words[i + 1])
+            local n = words[i + 2] and M.parse_int(words[i + 2])
+            if not s or not n or n < 1 or n > M.EXEC_MAX_CAPTURE then
+                return nil, ("%s: capture needs '<start> <length>' with length 1..%d"):format(what, M.EXEC_MAX_CAPTURE)
+            end
+            o.captures[#o.captures + 1] = { start = s, length = n }
+            i = i + 3
+        elseif opt == "max" then
+            local n = words[i + 1] and M.parse_int(words[i + 1])
+            if not n or n < 1 then return nil, what .. ": max needs a whole number of hits >= 1" end
+            o.max, i = n, i + 2
+        else
+            return nil, ("%s: unknown option '%s' (expected %sstack, capture or max)"):format(
+                what, words[i], allow_registers and "registers, " or "")
+        end
+        o.any = true
+    end
+    return o
+end
+
+--- Split a config value into words.
+--- @return list of the space-separated words.
+--- @requires Nothing.
+local function split_words(value)
+    local words = {}
+    for w in value:gmatch("%S+") do words[#words + 1] = w end
+    return words
+end
+
+--- Parse one exec_watch value: "<address> [stack <words>] [capture <start>
+--- <length>]... [max <hits>]" (options as in M.parse_hit_options).
+--- @return table {address, stack, captures, max}, or nil + error text.
+--- @requires Nothing.
+function M.parse_exec_watch(value)
+    local words = split_words(value)
+    local addr = words[1] and M.parse_int(words[1])
+    if not addr then
+        return nil, "exec_watch needs '<address> [stack <words>] [capture <start> <length>] [max <hits>]'"
+    end
+    local o, err = M.parse_hit_options(words, 2, "exec_watch", false)
+    if not o then return nil, err end
+    o.address = addr
+    return o
+end
+
+--- Parse one watch value: "<start> <length> [registers] [stack <words>]
+--- [capture <start> <length>]... [max <hits>]". With any option, every write
+--- to the range is also logged with the registers at that moment (to
+--- write_hits.tsv), not only value changes: the registers of the code doing
+--- a copy show where it copies from.
+--- @return table {start, length, registers, stack, captures, max}, or nil + error text.
+--- @requires Nothing.
+function M.parse_watch(value)
+    local words = split_words(value)
+    local start, len = words[1] and M.parse_int(words[1]), words[2] and M.parse_int(words[2])
+    if not start or not len or len < 1 then
+        return nil, "watch needs '<start> <length> [registers] [stack <words>] [capture <start> <length>] "
+            .. "[max <hits>]', e.g. 0xC000 0x100"
+    end
+    local o, err = M.parse_hit_options(words, 3, "watch", true)
+    if not o then return nil, err end
+    o.start, o.length, o.registers = start, len, o.any
+    return o
+end
+
+--- Format a register table ({A = 18, PC = 24566, ...}) as text.
+--- @return "A=0x12 B=0x00 ... PC=0x5FF6" with names sorted, or "?" when empty or not a table.
+--- @requires Nothing.
+function M.registers_string(regs)
+    if type(regs) ~= "table" then return "?" end
+    local names = {}
+    for k, v in pairs(regs) do
+        if type(v) == "number" then names[#names + 1] = tostring(k) end
+    end
+    if #names == 0 then return "?" end
+    table.sort(names)
+    local parts = {}
+    for _, k in ipairs(names) do parts[#parts + 1] = ("%s=0x%X"):format(k, regs[k]) end
+    return table.concat(parts, " ")
+end
+
+--- Format a list of byte values as hex text.
+--- @return e.g. "0A1BFF", or "" for an empty list.
+--- @requires Nothing.
+function M.hex_bytes(bytes)
+    local parts = {}
+    for i = 1, #bytes do parts[i] = ("%02X"):format(bytes[i] % 256) end
+    return table.concat(parts)
+end
+
 --- Decide whether to snapshot at this frame, and why.
 --- `pending` maps frame -> reason for snapshots scheduled by snapshot_on_change.
---- @return a reason ("listed", "every", or the pending reason), or nil for no snapshot.
+--- @return a reason ("listed", "range", "every", or the pending reason), or nil for no snapshot.
 --- @requires Nothing.
 function M.snapshot_reason(cfg, frame, pending)
     if pending and pending[frame] then return pending[frame] end
     if cfg.snapshot_frames[frame] then return "listed" end
+    for _, r in ipairs(cfg.snapshot_ranges or {}) do
+        if frame >= r.start and frame <= r.stop and (frame - r.start) % r.step == 0 then return "range" end
+    end
     if cfg.snapshot_every > 0 and frame > 0 and frame % cfg.snapshot_every == 0 then return "every" end
     return nil
+end
+
+--- Decide whether to save a checkpoint savestate at this frame.
+--- @return true for a frame listed in save_states or a multiple of save_states_every.
+--- @requires Nothing.
+function M.should_save_state(cfg, frame)
+    if cfg.save_states and cfg.save_states[frame] then return true end
+    local every = cfg.save_states_every or 0
+    return every > 0 and frame > 0 and frame % every == 0
 end
 
 --- Count the keys of a table (sets like snapshot_frames have no length).
@@ -383,10 +549,31 @@ local function setup()
             .. "). Recording mode would let inputs overwrite the movie.", 0)
     end
 
+    -- Checkpoint start: load a savestate made earlier during this same movie.
+    -- In read-only playback BizHawk then continues the movie from that frame,
+    -- so recording starts there instead of at power-on. The file must exist
+    -- and the movie must still be playing afterwards.
+    if cfg.start_state then
+        local probe = io.open(cfg.start_state, "rb")
+        if not probe then error("start_state not found: " .. cfg.start_state, 0) end
+        probe:close()
+        if not callable(savestate.load) then error("this BizHawk build has no savestate.load", 0) end
+        local before = emu.framecount()
+        local loaded, load_err = pcall(savestate.load, cfg.start_state)
+        if not loaded then error("couldn't load start_state " .. cfg.start_state .. ": " .. tostring(load_err), 0) end
+        local after_mode = movie_mode()
+        trace(("loaded start_state %s: frame %d -> %d, movie.mode() = %s"):format(
+            cfg.start_state, before, emu.framecount(), tostring(after_mode)))
+        if after_mode ~= "PLAY" then
+            error("after loading start_state the movie is no longer playing (mode " .. tostring(after_mode)
+                .. "): was the state saved during this movie?", 0)
+        end
+    end
+
     local st = {
         cfg = cfg, text = text, out = cfg.out .. "/", start_frame = emu.framecount(),
         sizes = {}, shadow = {}, dirty = {}, pending = {}, delays = M.watched_addresses(cfg),
-        lag_total = 0, rows = 0, length = try(movie.length) or -1, reason = "movie ended",
+        lag_total = 0, rows = 0, length = try(movie.length) or -1, reason = "movie ended", states_saved = {},
     }
     trace("opening output files in " .. st.out)
     st.frames = buffered(st.out .. "frames.tsv")
@@ -441,6 +628,61 @@ local function setup()
     -- read once at frame end (some cores report written values as 0).
     -- Starting values are logged as "init" rows, so a timeline knows the
     -- value before the first change.
+    -- Hit loggers for exec_watch and register-logging watch lines. A hit logs
+    -- registers, optional stack words and captured bytes. Callbacks run
+    -- mid-frame; on BizHawk 1.11.7 the frame counter already shows the frame
+    -- being emulated there (checked against writes.tsv), so hits are stamped
+    -- framecount() as frames.tsv and writes.tsv are. Hits past `max`
+    -- are only counted. The callback never raises: on BizHawk 1.x an error
+    -- inside a callback can surface as a modal dialog that blocks the
+    -- emulator, so errors are counted and the first one is logged instead.
+    st.hit_stats = {}
+    local function hit_logger(file, kind, label, o)
+        local stat = { hits = 0, logged = 0, errors = 0 }
+        st.hit_stats[#st.hit_stats + 1] = { kind = kind, label = label, stat = stat }
+        local function record(addr)
+            local regs = try(emu.getregisters)
+            memory.usememorydomain("System Bus")
+            local stack = {}
+            local sp = type(regs) == "table" and regs.SP or nil
+            if o.stack > 0 and type(sp) == "number" then
+                for i = 0, 2 * o.stack - 1 do stack[#stack + 1] = memory.readbyte(sp + i) end
+            end
+            local caps = {}
+            for _, c in ipairs(o.captures) do
+                local b = {}
+                for a = c.start, c.start + c.length - 1 do b[#b + 1] = memory.readbyte(a) end
+                caps[#caps + 1] = M.hex_bytes(b)
+            end
+            file:add(("%d\t0x%04X\t%d\t%s\t%s\t%s"):format(emu.framecount(), addr, stat.hits,
+                M.registers_string(regs), M.hex_bytes(stack), table.concat(caps, " ")))
+        end
+        return function(addr)
+            stat.hits = stat.hits + 1
+            if stat.logged >= o.max then return end
+            stat.logged = stat.logged + 1
+            local fine, rec_err = pcall(record, addr)
+            if not fine then
+                stat.errors = stat.errors + 1
+                if stat.errors == 1 then trace(("%s %s: %s"):format(kind, label, tostring(rec_err)), true) end
+            end
+        end
+    end
+    local HIT_HEADER = "frame\taddress\thit\tregisters\tstack\tcapture"
+
+    -- Register-logging watch lines: one logger per line, shared by its bytes.
+    local wlog = {}
+    for _, w in ipairs(cfg.watch) do
+        if w.registers then
+            if not st.write_hits then
+                st.write_hits = buffered(st.out .. "write_hits.tsv")
+                st.write_hits:add(HIT_HEADER)
+            end
+            local log = hit_logger(st.write_hits, "watch", ("0x%04X"):format(w.start), w)
+            for a = w.start, w.start + w.length - 1 do wlog[a] = log end
+        end
+    end
+
     local addrs = {}
     for a in pairs(st.delays) do addrs[#addrs + 1] = a end
     table.sort(addrs)
@@ -449,9 +691,27 @@ local function setup()
     for _, a in ipairs(addrs) do
         st.shadow[a] = read_bus(a)
         st.writes:add(("%d\t0x%04X\t%d\t%d\tinit"):format(st.start_frame, a, st.shadow[a], st.shadow[a]))
+        local log = wlog[a]
         event.onmemorywrite(function()
             dirty[a] = try(emu.getregister, "PC") or -1
+            if log then log(a) end
         end, a)
+    end
+
+    -- Exec-watches: the same hit logger, on execution of an address.
+    if #cfg.exec > 0 then
+        if not callable(event.onmemoryexecute) then
+            error("this BizHawk build has no event.onmemoryexecute; remove the exec_watch lines", 0)
+        end
+        st.execs = buffered(st.out .. "execs.tsv")
+        st.execs:add(HIT_HEADER)
+        trace(("registering %d exec-watch(es)"):format(#cfg.exec))
+        for _, w in ipairs(cfg.exec) do
+            local log = hit_logger(st.execs, "exec_watch", ("0x%04X"):format(w.address), w)
+            local addr = w.address
+            local reg_ok, reg_err = pcall(event.onmemoryexecute, function() log(addr) end, addr)
+            if not reg_ok then error(("can't watch execution of 0x%04X: %s"):format(addr, tostring(reg_err)), 0) end
+        end
     end
 
     if cfg.turbo then
@@ -498,6 +758,16 @@ local function step(st)
         st.dirty[a] = nil
     end
 
+    -- Checkpoints: a savestate at chosen frames, for later passes that start
+    -- there (start_state). Saved after the frame's data, so loading it
+    -- continues with the next frame.
+    if M.should_save_state(cfg, frame) then
+        local name = ("state_f%07d.State"):format(frame)
+        local ok, err = pcall(savestate.save, st.out .. name)
+        trace(ok and ("saved checkpoint " .. name) or ("couldn't save checkpoint " .. name .. ": " .. tostring(err)))
+        if ok then st.states_saved[#st.states_saved + 1] = name end
+    end
+
     local snap_reason = M.snapshot_reason(cfg, frame, st.pending)
     st.pending[frame] = nil
     if snap_reason then
@@ -505,6 +775,8 @@ local function step(st)
         -- complete data files and names the call it stopped in.
         local tr = cfg.trace_snapshots
         st.frames:flush(); st.writes:flush(); st.snaps:flush()
+        if st.execs then st.execs:flush() end
+        if st.write_hits then st.write_hits:flush() end
         if tr then trace(("snapshot f%d (%s): start"):format(frame, snap_reason), true) end
         for _, d in ipairs(cfg.domains) do
             if tr then trace(("snapshot f%d: reading %s"):format(frame, d), true) end
@@ -524,12 +796,17 @@ local function step(st)
         trace(("heartbeat frame %d, lag %d"):format(frame, st.lag_total), true)
     end
 
-    if st.rows % cfg.flush_every == 0 then st.frames:flush(); st.writes:flush(); st.snaps:flush() end
+    if st.rows % cfg.flush_every == 0 then
+        st.frames:flush(); st.writes:flush(); st.snaps:flush()
+        if st.execs then st.execs:flush() end
+        if st.write_hits then st.write_hits:flush() end
+    end
     if cfg.progress_every > 0 and frame % cfg.progress_every == 0 then
         trace(("frame %d / %d, %d lag frames so far"):format(frame, st.length, st.lag_total))
     end
     local now = movie_mode()
     if now ~= "PLAY" then st.reason = "movie mode became " .. tostring(now); return true end
+    if cfg.stop_after > 0 and frame >= cfg.stop_after then st.reason = "stop_after " .. cfg.stop_after; return true end
     return st.length > 0 and frame >= st.length
 end
 
@@ -538,6 +815,8 @@ end
 --- @requires BizHawk Lua: emu, gameinfo, client; io.
 local function finish(st)
     st.frames:close(); st.writes:close(); st.snaps:close()
+    if st.execs then st.execs:close() end
+    if st.write_hits then st.write_hits:close() end
     local meta = buffered(st.out .. "run.tsv")
     meta:add("key\tvalue")
     meta:add("recorder_version\t" .. M.VERSION)
@@ -546,15 +825,27 @@ local function finish(st)
     meta:add("rom_hash\t" .. tostring(try(gameinfo.getromhash)))
     meta:add("movie_length\t" .. tostring(st.length))
     meta:add("started_at_frame\t" .. st.start_frame)
+    if st.cfg.start_state then meta:add("start_state\t" .. st.cfg.start_state) end
+    if #st.states_saved > 0 then meta:add("states_saved\t" .. table.concat(st.states_saved, ", ")) end
     meta:add("ended_at_frame\t" .. emu.framecount())
     meta:add("frames_recorded\t" .. st.rows)
     meta:add("lag_frames\t" .. st.lag_total)
     meta:add("end_reason\t" .. st.reason)
+    for _, e in ipairs(st.hit_stats) do
+        local key = (e.kind == "watch" and "write_hits." or "exec.") .. e.label .. "."
+        meta:add(key .. "hits\t" .. e.stat.hits)
+        meta:add(key .. "logged\t" .. e.stat.logged)
+        meta:add(key .. "errors\t" .. e.stat.errors)
+    end
     for d, n in pairs(st.sizes) do meta:add("domain_size." .. d .. "\t" .. n) end
     meta:add("config\t" .. (st.text:gsub("\r", ""):gsub("\n", " | ")))
     meta:close()
     trace(("done, %d frames (%d lag) from frame %d; files in %s"):format(st.rows, st.lag_total, st.start_frame, st.out))
-    if st.start_frame > 0 then trace("WARNING started at frame " .. st.start_frame .. ", not 0 (see the how-to at the top)") end
+    if st.cfg.start_state then
+        trace("started from checkpoint " .. st.cfg.start_state .. " at frame " .. st.start_frame)
+    elseif st.start_frame > 0 then
+        trace("WARNING started at frame " .. st.start_frame .. ", not 0 (see the how-to at the top)")
+    end
     if st.cfg.exit_at_end then try(client.exit) end
 end
 

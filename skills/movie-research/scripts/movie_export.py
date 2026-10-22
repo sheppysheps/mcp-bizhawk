@@ -6,9 +6,18 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
 
   summary  <export>                  totals, lag runs, snapshots, write count
   frames   <export> --from N --to M  the per-frame rows (frame, lag, input)
-  writes   <export> [--address A]    watched writes (frame, address, old, new, pc)
+  writes   <export> [--address A]    watched writes (frame, address, old, new, pc);
+                                     --bits shows which bits flipped
+  flags    <export> [--once]         per-bit history of watched bytes; --once lists
+                                     bits set once and never cleared (pickups, flags)
   timeline <export> --address A      segments by a watched variable, e.g. the current
                                      room, with a snapshot frame for each
+  execs    <export> [--group HL,DE]  exec-watch hits: registers each time a watched
+                                     address ran, raw or grouped by distinct values;
+                                     --writes: registers at each write to a watch
+                                     line with 'registers'
+  shots    <export> [--dark 0.5]     screenshots with mean brightness; --dark lists
+                                     dips (fades, black transition screens)
   compare  <a> <b>                   first frame where two recordings of the same
                                      movie differ: input, lag, or memory snapshot
 
@@ -23,7 +32,14 @@ import csv
 import hashlib
 import json
 import os
+import re
 import sys
+
+# The PNG reader sits next to this script (a copy of tile-graphics' png.py, so
+# this skill works on its own). Put this folder first on the path: `python -I`
+# leaves it off, and an installed package named "png" must not win.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import png  # noqa: E402
 
 
 # ── Reading an export folder ──────────────────────────────────────────────
@@ -58,7 +74,128 @@ def load(folder):
              for r in read_tsv(os.path.join(folder, "snapshots.tsv"))]
     writes = [{"frame": int(r["frame"]), "address": r["address"], "old": int(r["old"]), "new": int(r["new"]),
                "pc": r["pc"]} for r in read_tsv(os.path.join(folder, "writes.tsv"))]
-    return {"folder": folder, "meta": meta, "frames": frames, "snapshots": snaps, "writes": writes}
+    # execs.tsv (recorder 9+, exec_watch) and write_hits.tsv (recorder 10+,
+    # watch lines with registers) share one format: a hit with registers.
+    def hits(name):
+        return [{"frame": int(r["frame"]), "address": r["address"], "hit": int(r["hit"]),
+                 "registers": parse_registers(r["registers"]), "stack": r.get("stack") or "",
+                 "capture": (r.get("capture") or "").split()}
+                for r in read_tsv(os.path.join(folder, name))]
+    return {"folder": folder, "meta": meta, "frames": frames, "snapshots": snaps, "writes": writes,
+            "execs": hits("execs.tsv"), "write_hits": hits("write_hits.tsv")}
+
+
+def parse_registers(text):
+    """Parse the recorder's register column ("A=0x12 PC=0x5FF6").
+
+    Returns: dict name -> int; empty for "?" or malformed parts.
+    Requires: nothing.
+    """
+    regs = {}
+    for part in (text or "").split():
+        name, _, value = part.partition("=")
+        try:
+            regs[name] = int(value, 0)
+        except ValueError:
+            pass
+    return regs
+
+
+def exec_field(hit, name, big_endian=False):
+    """Read one named field of an exec hit, for grouping.
+
+    Names: a register ("A", "PC"); a pair of one-letter registers read high
+    byte first ("HL" = H * 256 + L, as on Z80-family CPUs); "stackN" for the
+    Nth 2-byte word at SP (little-endian unless big_endian); "capN" for the
+    Nth captured range as hex text.
+    Returns: an int or str, or None when the hit doesn't have that field.
+    Requires: nothing.
+    """
+    regs = hit["registers"]
+    if name in regs:
+        return regs[name]
+    if len(name) == 2 and name[0] in regs and name[1] in regs:
+        return regs[name[0]] * 256 + regs[name[1]]
+    if name.startswith("stack") and name[5:].isdigit():
+        i = int(name[5:])
+        word = hit["stack"][4 * i:4 * i + 4]
+        if len(word) < 4:
+            return None
+        lo, hi = int(word[0:2], 16), int(word[2:4], 16)
+        return lo * 256 + hi if big_endian else hi * 256 + lo
+    if name.startswith("cap") and name[3:].isdigit():
+        i = int(name[3:])
+        return hit["capture"][i] if i < len(hit["capture"]) else None
+    return None
+
+
+def group_execs(execs, fields, big_endian=False):
+    """Group exec hits by the values of some fields.
+
+    Returns: list of {"values": {field: value}, "count", "first_frame",
+    "last_frame"}, in order of first appearance.
+    Requires: nothing.
+    """
+    groups = {}
+    for h in execs:
+        key = tuple(exec_field(h, f, big_endian) for f in fields)
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"values": dict(zip(fields, key)), "count": 0,
+                               "first_frame": h["frame"], "last_frame": h["frame"]}
+        g["count"] += 1
+        g["last_frame"] = h["frame"]
+    return sorted(groups.values(), key=lambda g: g["first_frame"])
+
+
+def bit_changes(old, new):
+    """Which bits flipped between two byte values.
+
+    Returns: list of (bit, "set" or "cleared"), lowest bit first.
+    Requires: nothing.
+    """
+    diff = (old ^ new) & 0xFF
+    return [(b, "set" if new >> b & 1 else "cleared") for b in range(8) if diff >> b & 1]
+
+
+def bits_text(old, new):
+    """Short form of bit_changes: "+3 -0" (bit 3 set, bit 0 cleared). Returns: str."""
+    return " ".join(("+" if kind == "set" else "-") + str(b) for b, kind in bit_changes(old, new))
+
+
+def flag_bits(writes, addresses=None):
+    """Per-bit history of watched bytes, from writes.tsv rows.
+
+    "init" rows give each byte's starting value. Returns: list of dicts
+    {"address", "bit", "initial", "final", "sets", "clears", "first_set",
+    "set_frames"}, one per bit that changed, ordered by first change.
+    Requires: nothing.
+    """
+    state, out = {}, {}
+    for w in writes:
+        a = int(w["address"], 16)
+        if addresses is not None and a not in addresses:
+            continue
+        if w["pc"] == "init":
+            state[a] = w["new"]
+            continue
+        old = state.get(a, w["old"])
+        for b, kind in bit_changes(old, w["new"]):
+            rec = out.get((a, b))
+            if rec is None:
+                rec = out[(a, b)] = {"address": f"0x{a:04X}", "bit": b, "initial": old >> b & 1, "sets": 0,
+                                     "clears": 0, "first_set": None, "set_frames": [], "first_change": w["frame"]}
+            if kind == "set":
+                rec["sets"] += 1
+                rec["set_frames"].append(w["frame"])
+                if rec["first_set"] is None:
+                    rec["first_set"] = w["frame"]
+            else:
+                rec["clears"] += 1
+        state[a] = w["new"]
+    for (a, b), rec in out.items():
+        rec["final"] = state.get(a, 0) >> b & 1
+    return sorted(out.values(), key=lambda r: (r["first_change"], int(r["address"], 16), r["bit"]))
 
 
 def lag_runs(frames, top=5):
@@ -236,8 +373,61 @@ def cmd_summary(args):
              f"  lag frames {lag} ({100.0 * lag / max(1, len(fr)):.2f}%); longest runs: "
              + (", ".join(f"{n} at {f}" for f, n in runs) or "none"),
              f"  snapshots {len(e['snapshots'])} files at {data['snapshot_frames']} frames; watched writes {len(e['writes'])}"]
-    if m.get("started_at_frame") not in (None, "0"):
+    for prefix, table, label in (("exec.", "execs", "exec hits"), ("write_hits.", "write_hits", "write hits")):
+        keys = sorted(k[len(prefix):-len(".hits")] for k in m if k.startswith(prefix) and k.endswith(".hits"))
+        if keys or e[table]:
+            data[table] = len(e[table])
+            parts = [f"{a} {m.get(f'{prefix}{a}.hits', '?')} hits ({m.get(f'{prefix}{a}.logged', '?')} logged"
+                     + (f", {m[f'{prefix}{a}.errors']} errors" if m.get(f"{prefix}{a}.errors", "0") != "0" else "")
+                     + ")" for a in keys]
+            lines.append(f"  {label} logged {len(e[table])}" + (": " + "; ".join(parts) if parts else ""))
+    if m.get("start_state"):
+        lines.append(f"  started from checkpoint {m['start_state']} at frame {m.get('started_at_frame', '?')}")
+    elif m.get("started_at_frame") not in (None, "0"):
         lines.append(f"  WARNING: recording started at frame {m['started_at_frame']}, not 0")
+    if m.get("states_saved"):
+        names = [s.strip() for s in m["states_saved"].split(",") if s.strip()]
+        shown = ", ".join(names) if len(names) <= 4 else f"{names[0]} ... {names[-1]}"
+        lines.append(f"  checkpoints saved: {len(names)} ({shown})")
+    _emit(args, data, lines)
+
+
+def _fmt(value):
+    """Show a grouped field value: ints as hex, others as text. Returns: str."""
+    if value is None:
+        return "-"
+    return f"0x{value:04X}" if isinstance(value, int) else str(value)
+
+
+def cmd_execs(args):
+    """Exec-watch hits (or, with --writes, register-logging watch hits), raw or
+    grouped by register/stack/capture values. Returns: None."""
+    e = load(args.export)
+    table, source = ("write_hits", "write_hits.tsv: add 'registers' to a watch line") if args.writes \
+        else ("execs", "execs.tsv: set exec_watch")
+    want = None if args.address is None else int(args.address, 0)
+    hits = [h for h in e[table] if (want is None or int(h["address"], 16) == want)
+            and args.start <= h["frame"] <= args.end]
+    if not hits:
+        _emit(args, [], ["no matching hits" + ("" if e[table] else f" (no {source})")])
+        return
+    if args.group:
+        fields = [f.strip() for f in args.group.split(",") if f.strip()]
+        groups = group_execs(hits, fields, args.big_endian)
+        shown = groups[:args.limit]
+        lines = [f"{len(hits)} hits, {len(groups)} distinct ({', '.join(fields)})"]
+        lines += ["  " + "  ".join(f"{k}={_fmt(v)}" for k, v in g["values"].items())
+                  + f"  x{g['count']}  frames {g['first_frame']}-{g['last_frame']}" for g in shown]
+        data, rows = groups, groups
+    else:
+        shown = hits[:args.limit]
+        lines = [f"{h['frame']:>8}  {h['address']}  #{h['hit']:<5} "
+                 + " ".join(f"{k}={_fmt(v)}" for k, v in sorted(h["registers"].items()))
+                 + (f"  stack {h['stack']}" if h["stack"] else "") + (f"  cap {' '.join(h['capture'])}" if h["capture"] else "")
+                 for h in shown]
+        data, rows = hits, hits
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
     _emit(args, data, lines)
 
 
@@ -258,12 +448,41 @@ def cmd_writes(args):
     want = None if args.address is None else int(args.address, 0)
     rows = [w for w in e["writes"] if (want is None or int(w["address"], 16) == want)
             and args.start <= w["frame"] <= args.end]
+    if args.bits:
+        for w in rows:
+            w["bits"] = bits_text(w["old"], w["new"]) if w["pc"] != "init" else ""
     shown = rows[:args.limit]
-    lines = [f"{w['frame']:>8}  {w['address']}  {w['old']:>3} -> {w['new']:<3}  pc {w['pc']}" for w in shown]
+    lines = [f"{w['frame']:>8}  {w['address']}  {w['old']:>3} -> {w['new']:<3}  pc {w['pc']}"
+             + (f"  bits {w['bits']}" if args.bits and w["bits"] else "") for w in shown]
     if len(rows) > len(shown):
         lines.append(f"... {len(rows) - len(shown)} more writes (raise --limit or use --json)")
     if not rows:
         lines.append("no matching writes")
+    _emit(args, rows, lines)
+
+
+def cmd_flags(args):
+    """Per-bit history of watched bytes; --once keeps bits set exactly once and
+    never cleared (collected items, opened doors, story flags). Returns: None."""
+    e = load(args.export)
+    addresses = None
+    if args.address:
+        addresses = {int(args.address, 0)}
+    elif args.range:
+        start, length = int(args.range[0], 0), int(args.range[1], 0)
+        addresses = set(range(start, start + length))
+    rows = flag_bits([w for w in e["writes"] if w["frame"] <= args.end], addresses)
+    if args.once:
+        rows = [r for r in rows if r["sets"] == 1 and r["clears"] == 0 and r["initial"] == 0]
+    rows = [r for r in rows if r["first_change"] >= args.start]
+    shown = rows[:args.limit]
+    lines = [f"{len(rows)} bits" + (" set once and never cleared" if args.once else " changed")]
+    lines += [f"  {r['address']} bit {r['bit']}  first set {r['first_set'] if r['first_set'] is not None else '-':>7}  "
+              f"sets {r['sets']:>3}  clears {r['clears']:>3}  {r['initial']}->{r['final']}" for r in shown]
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
+    if not e["writes"]:
+        lines.append("  (no writes.tsv rows: watch the flag range in the recorder config)")
     _emit(args, rows, lines)
 
 
@@ -300,6 +519,58 @@ def cmd_timeline(args):
     if len(rows) > len(shown):
         lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
     _emit(args, data, lines)
+
+
+SHOT_RE = re.compile(r"^shot_f(\d+)(?:_(.+))?\.png$")
+
+
+def list_shots(folder):
+    """Find the recorder's screenshots in an export folder.
+
+    Returns: list of {"frame", "reason", "file"} sorted by frame; the reason is
+    "?" for screenshots from recorders before version 8 (no reason in the name).
+    Requires: read access to the folder.
+    """
+    shots = []
+    for name in os.listdir(folder):
+        m = SHOT_RE.match(name)
+        if m:
+            shots.append({"frame": int(m.group(1)), "reason": m.group(2) or "?", "file": name})
+    return sorted(shots, key=lambda s: s["frame"])
+
+
+def brightness(path):
+    """Mean luminance of a screenshot (0 black .. 255 white, Rec. 601 weights).
+
+    Returns: float. Raises ValueError for PNG formats png.read_png can't read.
+    Requires: png.read_png (standard library only).
+    """
+    width, height, pixels = png.read_png(path)
+    total = sum(0.299 * r + 0.587 * g + 0.114 * b for r, g, b, _ in pixels)
+    return total / max(1, width * height)
+
+
+def cmd_shots(args):
+    """Screenshots with their mean brightness; --dark lists only dips (fades,
+    black transition screens) below a fraction of the median. Returns: None."""
+    shots = [s for s in list_shots(args.export) if args.start <= s["frame"] <= args.end]
+    if not shots:
+        _emit(args, [], ["no screenshots in that range"])
+        return
+    for s in shots:
+        s["brightness"] = round(brightness(os.path.join(args.export, s["file"])), 1)
+    values = sorted(s["brightness"] for s in shots)
+    median = values[len(values) // 2]
+    limit = median * args.dark if args.dark is not None else None
+    rows = [s for s in shots if limit is None or s["brightness"] <= limit]
+    shown = rows[:args.limit]
+    head = f"{len(shots)} screenshots, median brightness {median:.1f}"
+    if limit is not None:
+        head += f"; {len(rows)} at or below {args.dark:g} x median ({limit:.1f})"
+    lines = [head] + [f"  f{s['frame']:>7}  {s['brightness']:>6.1f}  {s['reason']}" for s in shown]
+    if len(rows) > len(shown):
+        lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
+    _emit(args, rows, lines)
 
 
 def cmd_compare(args):
@@ -350,8 +621,21 @@ def main(argv=None):
     w.add_argument("--from", dest="start", type=int, default=0)
     w.add_argument("--to", dest="end", type=int, default=10 ** 9)
     w.add_argument("--limit", type=int, default=40)
+    w.add_argument("--bits", action="store_true", help="also show which bits flipped (+3 set, -0 cleared)")
     common(w)
     w.set_defaults(fn=cmd_writes)
+
+    fl = sub.add_parser("flags", help="per-bit history of watched bytes (items, keys, door and story flags)")
+    fl.add_argument("export")
+    fl.add_argument("--address", help="one watched byte, e.g. 0xD000")
+    fl.add_argument("--range", nargs=2, metavar=("START", "LENGTH"), help="a watched range, e.g. 0xD000 0x40")
+    fl.add_argument("--once", action="store_true",
+                    help="only bits that start clear, are set exactly once and never cleared")
+    fl.add_argument("--from", dest="start", type=int, default=0)
+    fl.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    fl.add_argument("--limit", type=int, default=60)
+    common(fl)
+    fl.set_defaults(fn=cmd_flags)
 
     t = sub.add_parser("timeline", help="segments of the movie by a watched variable (e.g. the current room)")
     t.add_argument("export")
@@ -363,6 +647,30 @@ def main(argv=None):
     t.add_argument("--limit", type=int, default=40)
     common(t)
     t.set_defaults(fn=cmd_timeline)
+
+    x = sub.add_parser("execs", help="exec-watch hits (registers when an address ran), raw or grouped")
+    x.add_argument("export")
+    x.add_argument("--writes", action="store_true",
+                   help="read write_hits.tsv instead: registers at each write to a 'watch ... registers' range")
+    x.add_argument("--address", help="one watched address, e.g. 0x6BF6")
+    x.add_argument("--group", help="comma list of fields to group by: registers (A, PC), pairs (HL, DE), "
+                                   "stackN (Nth word at SP), capN (Nth captured range)")
+    x.add_argument("--big-endian", action="store_true", help="read stack words high byte first")
+    x.add_argument("--from", dest="start", type=int, default=0)
+    x.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    x.add_argument("--limit", type=int, default=40)
+    common(x)
+    x.set_defaults(fn=cmd_execs)
+
+    sh = sub.add_parser("shots", help="screenshots with mean brightness; --dark finds fades")
+    sh.add_argument("export")
+    sh.add_argument("--dark", type=float, help="only list shots at or below this fraction of the median "
+                                               "brightness, e.g. 0.5 for fades and black screens")
+    sh.add_argument("--from", dest="start", type=int, default=0)
+    sh.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    sh.add_argument("--limit", type=int, default=40)
+    common(sh)
+    sh.set_defaults(fn=cmd_shots)
 
     c = sub.add_parser("compare", help="first divergence between two recordings of one movie")
     c.add_argument("a")

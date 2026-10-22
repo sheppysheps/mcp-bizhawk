@@ -49,9 +49,12 @@ Run from `skills/movie-research/scripts/`:
 ```
 python movie_export.py summary <out>                       # totals, lag runs, warnings
 python movie_export.py frames  <out> --from 140 --to 160   # lag flags and inputs per frame
-python movie_export.py writes  <out> --address 0xC0A0      # who wrote this byte, when, which value
+python movie_export.py writes  <out> --address 0xC0A0      # who wrote this byte, when, which value (--bits: which bits)
+python movie_export.py flags   <out> --range 0xD000 0x40 --once   # bits set once and never cleared: pickups, flags
 python movie_export.py timeline <out> --address 0xC9F9 --width 2 --unique   # one row per room/map seen
 python movie_export.py compare <outA> <outB>               # first divergence between two recordings
+python movie_export.py execs   <out> --address 0x1234 --group HL,DE,stack0   # distinct register values when code ran
+python movie_export.py shots   <out> --dark 0.5            # screenshots darker than half the median: fades
 ```
 
 Add `--json <file>` to keep a full result. Long lists are truncated on screen with a count of what was left out.
@@ -65,9 +68,20 @@ Add `--json <file>` to keep a full result. Long lists are truncated on screen wi
 ### Recipes
 
 - **Which room or map is on screen?** Ask the game, not a vision model: every game keeps a "current room" variable. Record with `snapshot_on_change = <address> <width> 30`, then `timeline --unique` lists each distinct value with its first frame, visit count and a snapshot frame taken just after entering. Label each *distinct* value once, from its screenshot, instead of recognizing every frame. The `pc` of the writes leads to the room loader, and from there to each room's data. Confirm the address first: the value must change exactly at room transitions and nowhere else.
+  - *Finding the variable:* room loads usually show up as lag bursts of a typical length in `frames.tsv`. Rank bytes by how well their changes between snapshots match those bursts (precision: it changes only at bursts; recall: it changes at every burst), then confirm the best candidates with `watch` on a second pass. A block of many bytes changing together is a buffer the room loader fills, not the ID.
+  - *Not every transition lags.* Some doors are only a palette fade with no load, so they leave no lag burst. Find them by brightness instead: record the window with `snapshot_range = <start> <end> 5` and `stop_after`, then `shots --dark 0.5` lists the screenshots darker than half the median, i.e. the fades and black transition screens, to within the step. Rank bytes against those frames.
+  - *Expect more than one kind of transition.* Bursts the candidate doesn't explain are the next lead: a game may teleport inside one large map (a fade with no room change), or scroll into a neighboring map with no fade at all. Rank again against only the unexplained bursts, and check a few screenshots by eye, since the person watching the movie spots transitions that the numbers miss.
 
+- **Where is the table a routine reads?** The registers of the code that copies a value point at its source. Two ways to log them:
+  - `watch = <dest start> <length> registers stack 2` logs the registers at every write to the copied data (`write_hits.tsv`; read it with `execs --writes`). This works wherever write-watches work, and the first write of each copy shows the source pointer at its start.
+  - `exec_watch = <pc> stack 2` logs them when the code itself runs (watch a few addresses before a writer PC, since the logged PC can be the next instruction). Not every core fires execute callbacks (BizHawk 1.11.7's Gambatte doesn't), so check `execs.tsv` early in the run.
+  
+  `execs [--writes] --group HL,DE,stack0` (register names depend on the CPU) lists each distinct source pointer, with the caller's return address and the frames it happened. The source pointer is the table entry; the caller usually chose it. Add `capture` for the game's "current bank" variable when the CPU maps code and data in banks.
+
+- **Study a late part of a long movie quickly.** A movie is only inputs, so the game state at frame N exists only after playing frames 0 to N-1; cutting the input log doesn't skip anything. Use checkpoints instead: one pass with `save_states = <frames>` writes savestates, and later passes set `start_state` to one of them. In read-only playback BizHawk continues the movie from the loaded frame. Confirm a checkpoint once: record the same window from frame 0 and from the state, and `compare` must report them identical.
 - **When does an event happen?** Snapshot every N frames, find the two snapshots it falls between (by screenshot or a known RAM value), then snapshot every frame in that gap.
 - **Which byte is a flag or counter?** Diff snapshots from just before and just after the event, then `watch` the candidate addresses on a second pass: `writes` shows the exact frame, the old and new values, and the PC of the code that wrote it (a lead into the disassembly).
+- **Which bit is an item, key or door flag?** Games pack these into single bits, so a byte going 0x04 → 0x0C is really "bit 3 set". Watch the candidate range for a whole run, then `flags --once` lists every bit that started clear, was set exactly once and never cleared, in frame order: the run's collected items, opened doors and story flags. `writes --bits` shows the flipped bits next to each change. Bits that toggle back and forth are states (a door currently open, an ability in use), not pickups. Match each first-set frame with its screenshot to name it.
 - **Known values are anchors.** Glitches leave predictable, abnormal values (a counter underflowing to 255, money going up when buying). Read the run's submission notes first: they say which glitches happen where, and those frames should be flagged, not treated as normal game behavior.
 
 ## Caveats

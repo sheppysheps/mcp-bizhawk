@@ -19,6 +19,72 @@ return function(mr)
     local defaults = mr.parse_config("out = x")
     check("diagnostics defaults", defaults and defaults.heartbeat_every == 0 and defaults.trace_snapshots == true)
 
+    -- exec_watch.
+    local ew = mr.parse_exec_watch("0x6BF6 stack 2 capture 0xFF80 0x10 capture 0xC000 1 max 50")
+    check("exec_watch parses all options", ew and ew.address == 0x6BF6 and ew.stack == 2 and ew.max == 50
+        and #ew.captures == 2 and ew.captures[1].start == 0xFF80 and ew.captures[1].length == 16
+        and ew.captures[2].length == 1)
+    local ew0 = mr.parse_exec_watch("0x0150")
+    check("exec_watch defaults", ew0 and ew0.stack == 0 and #ew0.captures == 0 and ew0.max == mr.EXEC_DEFAULT_MAX)
+    local function ew_rejects(name, value, expect)
+        local w, e = mr.parse_exec_watch(value)
+        check(name, w == nil and tostring(e):find(expect, 1, true) ~= nil, tostring(e))
+    end
+    ew_rejects("exec_watch rejects a missing address", "", "needs '<address>")
+    ew_rejects("exec_watch rejects an unknown option", "0x100 bank 3", "unknown option 'bank'")
+    ew_rejects("exec_watch caps stack words", "0x100 stack 99", "stack needs")
+    ew_rejects("exec_watch caps capture length", "0x100 capture 0xC000 999", "capture needs")
+    ew_rejects("exec_watch rejects max 0", "0x100 max 0", "max needs")
+    local ecfg = mr.parse_config("out = x\nexec_watch = 0x6BF6 stack 1\nexec_watch = 0x6C1C")
+    check("config collects exec_watch lines", ecfg and #ecfg.exec == 2 and ecfg.exec[2].address == 0x6C1C)
+    rejects("config reports a bad exec_watch with its line", "out = x\nexec_watch = 0x100 nope", "line 2: exec_watch")
+    check("registers_string sorts names and skips non-numbers",
+        mr.registers_string({ PC = 0x5FF6, A = 18, Flags = "z" }) == "A=0x12 PC=0x5FF6"
+        and mr.registers_string({}) == "?" and mr.registers_string(nil) == "?")
+    check("hex_bytes", mr.hex_bytes({ 10, 27, 255, 256 }) == "0A1BFF00" and mr.hex_bytes({}) == "")
+
+    -- snapshot_range and stop_after.
+    local rc = mr.parse_config("out = x\nsnapshot_range = 100 130 10\nsnapshot_range = 0x200 0x200 1\nstop_after = 140")
+    check("snapshot_range and stop_after parse", rc and #rc.snapshot_ranges == 2 and rc.snapshot_ranges[2].start == 0x200
+        and rc.stop_after == 140)
+    if rc then
+        check("snapshot_range hits start, steps and end only",
+            mr.snapshot_reason(rc, 100, nil) == "range" and mr.snapshot_reason(rc, 120, nil) == "range"
+            and mr.snapshot_reason(rc, 130, nil) == "range" and mr.snapshot_reason(rc, 125, nil) == nil
+            and mr.snapshot_reason(rc, 140, nil) == nil and mr.snapshot_reason(rc, 0x200, nil) == "range")
+    end
+    rejects("snapshot_range rejects end before start", "out = x\nsnapshot_range = 10 5 1", "snapshot_range needs")
+    rejects("snapshot_range rejects step 0", "out = x\nsnapshot_range = 1 5 0", "snapshot_range needs")
+    local d0 = mr.parse_config("out = x")
+    check("stop_after defaults to 0 (play to the end)", d0 and d0.stop_after == 0 and #d0.snapshot_ranges == 0)
+
+    -- Checkpoint savestates.
+    local cp = mr.parse_config("out = x\nsave_states = 50000, 0xC350\nstart_state = C:\\st\\state_f0050000.State")
+    check("save_states and start_state parse", cp and cp.save_states[50000] and mr.count_keys(cp.save_states) == 1
+        and cp.start_state == "C:/st/state_f0050000.State")
+    rejects("save_states rejects frame 0", "out = x\nsave_states = 0", "bad save_states frame")
+    rejects("start_state needs a path", "out = x\nstart_state =", "start_state needs")
+    check("no checkpoints by default", d0 and d0.start_state == nil and mr.count_keys(d0.save_states) == 0
+        and d0.save_states_every == 0 and not mr.should_save_state(d0, 1000))
+    local ce = mr.parse_config("out = x\nsave_states_every = 1000\nsave_states = 1500")
+    check("save_states_every plus listed frames", ce and mr.should_save_state(ce, 1000) and mr.should_save_state(ce, 2000)
+        and mr.should_save_state(ce, 1500) and not mr.should_save_state(ce, 1999) and not mr.should_save_state(ce, 0))
+
+    -- watch lines with register logging.
+    local pw = mr.parse_watch("0xCC30 0x30")
+    check("plain watch logs no registers", pw and pw.start == 0xCC30 and pw.length == 0x30 and pw.registers == false)
+    local rw = mr.parse_watch("0xCC30 0x30 registers")
+    check("watch ... registers enables register logging", rw and rw.registers == true and rw.stack == 0)
+    local ow = mr.parse_watch("0xC3EF 3 stack 2 capture 0xFF80 4 max 300")
+    check("hit options imply registers", ow and ow.registers == true and ow.stack == 2 and ow.max == 300
+        and #ow.captures == 1)
+    local bw, berr = mr.parse_watch("0xC000 4 bogus")
+    check("watch rejects unknown options", bw == nil and tostring(berr):find("unknown option 'bogus'", 1, true) ~= nil, berr)
+    local xw, xerr = mr.parse_exec_watch("0x100 registers")
+    check("exec_watch doesn't take 'registers' (it always logs them)", xw == nil and tostring(xerr):find("unknown option", 1, true) ~= nil, xerr)
+    local wcfg = mr.parse_config("out = x\nwatch = 0xCC30 0x30 registers stack 2")
+    check("config keeps watch hit options", wcfg and wcfg.watch[1].registers and wcfg.watch[1].stack == 2)
+
     -- Numbers.
     check("parse decimal", mr.parse_int(" 146 ") == 146)
     check("parse hex", mr.parse_int("0xC000") == 0xC000)
