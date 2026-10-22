@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Labeling Station</title>
+<link rel="stylesheet" href="/label.css">
+<script src="/label.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>Labeling Station</h1>
+  <span id="folder"></span>
+  <label><input type="checkbox" id="unlabeled"> unlabeled only</label>
+  <select id="guess-filter" aria-label="Filter by guessed method">
+    <option value="">all methods</option>
+  </select>
+  <span id="status" role="status">loading</span>
+</header>
+<main>
+  <nav id="list" aria-label="Events"></nav>
+  <section id="detail">
+    <div id="position"></div>
+    <div class="shots">
+      <figure><img id="shot-before" alt="Screenshot before"><figcaption id="cap-before">before</figcaption></figure>
+      <figure><img id="shot-after" alt="Screenshot after"><figcaption id="cap-after">after</figcaption></figure>
+    </div>
+    <h2>Places</h2>
+    <p class="hint">Name each new value once; later visits to the same value show the name.</p>
+    <div id="changes"></div>
+    <h2>Transition</h2>
+    <div class="form">
+      <label>Kind <select id="kind"></select></label>
+      <label>Exit method (at the origin) <select id="exit"></select></label>
+      <label>Entry state (on arrival) <select id="entry"></select></label>
+      <label>Requires <input id="requires" placeholder="none, a form, an item, a key..."></label>
+      <label class="wide">Notes <textarea id="notes" rows="3"></textarea></label>
+    </div>
+    <p class="hint">Keys: <kbd>j</kbd> next, <kbd>k</kbd> previous (outside text fields). Changes save automatically.</p>
+  </section>
+</main>
+</body>
+</html>
