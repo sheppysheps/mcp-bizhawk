@@ -53,6 +53,8 @@ figcaption { color: var(--muted); font-size: 12px; }
 input, select, textarea { font: inherit; color: var(--text); background: var(--panel);
                           border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
 .change input { flex: 1; min-width: 200px; }
+body.save-failed header { background: #a3262a; color: #ffffff; }
+body.save-failed #status, body.save-failed #folder { color: #ffffff; font-weight: 600; }
 #require-boxes { display: flex; flex-wrap: wrap; gap: 4px 14px; }
 #require-boxes .check { display: inline-flex; align-items: center; gap: 4px; flex-direction: row; color: var(--text); }
 header button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);

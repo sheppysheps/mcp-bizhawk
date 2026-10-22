@@ -209,9 +209,11 @@ async function save() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(labels),
     });
-    $("status").textContent = r.ok ? "saved" : `not saved (${r.status})`;
+    $("status").textContent = r.ok ? "saved" : `NOT SAVED (${r.status}): reopen the URL the server printed`;
+    document.body.classList.toggle("save-failed", !r.ok);
   } catch (err) {
-    $("status").textContent = "not saved (server stopped?)";
+    $("status").textContent = "NOT SAVED: the server stopped. Restart it and open the new URL";
+    document.body.classList.add("save-failed");
   }
 }
 
