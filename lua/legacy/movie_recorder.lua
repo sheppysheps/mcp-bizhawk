@@ -67,7 +67,7 @@ end
 --- frames from <start> to <end>, for dense coverage of a window), stop_after
 --- (end the recording after this frame; 0 = play to the end), save_states
 --- (frames at which to save a checkpoint savestate into `out`), save_states_every
---- (also save one every N frames; 0 = off; about 75 KB each), start_state
+--- (also save one every N frames; 0 = off; ~3.8 MB each on 1.11.7 for a long movie), start_state
 --- (a checkpoint to load at startup, so recording starts there), screenshots, watch (repeatable: "<start> <length>" on the System Bus),
 --- snapshot_on_change (repeatable: "<start> <length> [delay]": watch these
 --- bytes AND snapshot `delay` frames after any of them changes, default 30,
