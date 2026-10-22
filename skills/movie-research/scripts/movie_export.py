@@ -9,7 +9,12 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
   writes   <export> [--address A]    watched writes (frame, address, old, new, pc);
                                      --bits shows which bits flipped
   flags    <export> [--once]         per-bit history of watched bytes; --once lists
-                                     bits set once and never cleared (pickups, flags)
+                                     bits set once and never cleared (pickups, flags);
+                                     --snapshots WRAM reads periodic snapshots instead,
+                                     for flags whose address is still unknown
+  locate   <export> --frame F --domain CartRAM --inside WRAM
+                                     where one domain's bytes sit in another (e.g. the
+                                     live copy of the save file)
   timeline <export> --address A      segments by a watched variable, e.g. the current
                                      room, with a snapshot frame for each
   execs    <export> [--group HL,DE]  exec-watch hits: registers each time a watched
@@ -196,6 +201,81 @@ def flag_bits(writes, addresses=None):
     for (a, b), rec in out.items():
         rec["final"] = state.get(a, 0) >> b & 1
     return sorted(out.values(), key=lambda r: (r["first_change"], int(r["address"], 16), r["bit"]))
+
+
+def snapshot_bits(folder, snaps, lo=0, length=None):
+    """Per-bit history of a memory domain, from its snapshots instead of writes.
+
+    For flags whose location is unknown: snapshot a whole domain periodically,
+    then look for bits that change rarely. Each change is only known to have
+    happened after the previous snapshot, so every record also gives that
+    frame ("first_set_after"). Same record shape as flag_bits, with "address"
+    an offset into the domain plus "domain".
+    Returns: list of dicts, ordered by first change; empty with < 2 snapshots.
+    Requires: the snapshot files of one domain, all the same size.
+    """
+    snaps = sorted(snaps, key=lambda s: s["frame"])
+    out, prev, prev_frame = {}, None, None
+    for s in snaps:
+        with open(os.path.join(folder, s["file"]), "rb") as f:
+            data = f.read()
+        cur = data[lo:lo + length] if length is not None else data[lo:]
+        if prev is not None and cur != prev and len(cur) == len(prev):
+            # XOR as big integers, then find the differing bytes with a regex:
+            # both run in C, so a 32 KB domain over thousands of snapshots stays fast.
+            x = (int.from_bytes(prev, "big") ^ int.from_bytes(cur, "big")).to_bytes(len(cur), "big")
+            for m in re.finditer(rb"[^\x00]", x):
+                i = m.start()
+                old, new = prev[i], cur[i]
+                for b, kind in bit_changes(old, new):
+                    rec = out.get((i, b))
+                    if rec is None:
+                        rec = out[(i, b)] = {"domain": s["domain"], "address": f"0x{lo + i:04X}", "bit": b,
+                                             "initial": old >> b & 1, "sets": 0, "clears": 0, "first_set": None,
+                                             "first_set_after": None, "set_frames": [], "first_change": s["frame"]}
+                    if kind == "set":
+                        rec["sets"] += 1
+                        rec["set_frames"].append(s["frame"])
+                        if rec["first_set"] is None:
+                            rec["first_set"], rec["first_set_after"] = s["frame"], prev_frame
+                    else:
+                        rec["clears"] += 1
+        prev, prev_frame = cur, s["frame"]
+    for (i, b), rec in out.items():
+        rec["final"] = prev[i] >> b & 1
+    return sorted(out.values(), key=lambda r: (r["first_change"], int(r["address"], 16), r["bit"]))
+
+
+def locate(src, dst, min_run=4, top=5):
+    """Where a block of one memory domain appears in another, e.g. the live copy
+    of a save file (cart RAM) inside work RAM.
+
+    Trailing padding (a run of one repeated byte value) is dropped from `src`
+    first. Every offset of `dst` is scored by how many bytes match.
+    Returns: dict with "length" (bytes compared), "exact" (offsets where all
+    match) and "best" (up to `top` (offset, matching bytes), best first;
+    offsets with fewer than `min_run` matching bytes are left out).
+    Requires: nothing.
+    """
+    end = len(src)
+    while end > 1 and src[end - 1] == src[-1]:
+        end -= 1
+    block = src[:end]
+    if not block:
+        return {"length": 0, "exact": [], "best": []}
+    exact, start = [], dst.find(block)
+    while start != -1:
+        exact.append(start)
+        start = dst.find(block, start + 1)
+    n = len(block)
+    scores = []
+    for o in range(len(dst) - n + 1):
+        window = dst[o:o + n]
+        score = n if window == block else sum(1 for a, b in zip(window, block) if a == b)
+        if score >= min_run:
+            scores.append((score, o))
+    scores.sort(key=lambda t: (-t[0], t[1]))
+    return {"length": n, "exact": exact, "best": [(o, s) for s, o in scores[:top]]}
 
 
 def lag_runs(frames, top=5):
@@ -465,25 +545,68 @@ def cmd_flags(args):
     """Per-bit history of watched bytes; --once keeps bits set exactly once and
     never cleared (collected items, opened doors, story flags). Returns: None."""
     e = load(args.export)
-    addresses = None
+    lo, length = 0, None
     if args.address:
-        addresses = {int(args.address, 0)}
+        lo, length = int(args.address, 0), 1
     elif args.range:
-        start, length = int(args.range[0], 0), int(args.range[1], 0)
-        addresses = set(range(start, start + length))
-    rows = flag_bits([w for w in e["writes"] if w["frame"] <= args.end], addresses)
+        lo, length = int(args.range[0], 0), int(args.range[1], 0)
+    if args.snapshots:
+        # Snapshots: --from/--to pick the snapshots, so a bit's history starts
+        # at --from (e.g. after the game has initialised its RAM).
+        snaps = [s for s in e["snapshots"] if s["domain"] == args.snapshots and args.start <= s["frame"] <= args.end]
+        rows = snapshot_bits(e["folder"], snaps, lo, length)
+    else:
+        addresses = set(range(lo, lo + length)) if length is not None else None
+        rows = flag_bits([w for w in e["writes"] if w["frame"] <= args.end], addresses)
+        rows = [r for r in rows if r["first_change"] >= args.start]
     if args.once:
         rows = [r for r in rows if r["sets"] == 1 and r["clears"] == 0 and r["initial"] == 0]
-    rows = [r for r in rows if r["first_change"] >= args.start]
     shown = rows[:args.limit]
-    lines = [f"{len(rows)} bits" + (" set once and never cleared" if args.once else " changed")]
-    lines += [f"  {r['address']} bit {r['bit']}  first set {r['first_set'] if r['first_set'] is not None else '-':>7}  "
-              f"sets {r['sets']:>3}  clears {r['clears']:>3}  {r['initial']}->{r['final']}" for r in shown]
+    lines = [f"{len(rows)} bits" + (" set once and never cleared" if args.once else " changed")
+             + (f" ({args.snapshots} offsets, from {len(snaps)} snapshots)" if args.snapshots else "")]
+    for r in shown:
+        when = f"{r['first_set'] if r['first_set'] is not None else '-':>7}"
+        if args.snapshots:
+            span = f"{r['first_set_after']}-{r['first_set']}" if r["first_set"] is not None else "-"
+            when = f"{span:>15}"
+        lines.append(f"  {r['address']} bit {r['bit']}  first set {when}  "
+                     f"sets {r['sets']:>3}  clears {r['clears']:>3}  {r['initial']}->{r['final']}")
     if len(rows) > len(shown):
         lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
-    if not e["writes"]:
-        lines.append("  (no writes.tsv rows: watch the flag range in the recorder config)")
+    if args.snapshots and len(snaps) < 2:
+        lines.append(f"  (fewer than 2 {args.snapshots} snapshots in range: set snapshot_every in the recorder config)")
+    elif not args.snapshots and not e["writes"]:
+        lines.append("  (no writes.tsv rows: watch the flag range in the recorder config, or use --snapshots)")
     _emit(args, rows, lines)
+
+
+def cmd_locate(args):
+    """Find where a block of one domain sits in another at the same frame
+    (e.g. the live copy of the save file in work RAM). Returns: exit code 0 if
+    found, 1 if neither snapshot exists at that frame."""
+    e = load(args.export)
+
+    def snap(domain):
+        for s in e["snapshots"]:
+            if s["domain"] == domain and s["frame"] == args.frame:
+                with open(os.path.join(e["folder"], s["file"]), "rb") as f:
+                    return f.read()
+        return None
+
+    src, dst = snap(args.domain), snap(args.inside)
+    if src is None or dst is None:
+        print(f"no {args.domain if src is None else args.inside} snapshot at frame {args.frame}")
+        return 1
+    if args.range:
+        lo = int(args.range[0], 0)
+        src = src[lo:lo + int(args.range[1], 0)]
+    result = locate(src, dst, top=args.top)
+    lines = [f"{args.domain} block of {result['length']} bytes (trailing padding dropped) in {args.inside}, "
+             f"frame {args.frame}",
+             f"  exact copies at: {', '.join(f'0x{o:04X}' for o in result['exact']) or 'none'}"]
+    lines += [f"  0x{o:04X}: {s}/{result['length']} bytes match" for o, s in result["best"]]
+    _emit(args, result, lines)
+    return 0
 
 
 def cmd_timeline(args):
@@ -631,11 +754,24 @@ def main(argv=None):
     fl.add_argument("--range", nargs=2, metavar=("START", "LENGTH"), help="a watched range, e.g. 0xD000 0x40")
     fl.add_argument("--once", action="store_true",
                     help="only bits that start clear, are set exactly once and never cleared")
+    fl.add_argument("--snapshots", metavar="DOMAIN",
+                    help="read this domain's snapshots instead of watched writes, e.g. WRAM (addresses are then "
+                         "domain offsets): finds flags without knowing where they are")
     fl.add_argument("--from", dest="start", type=int, default=0)
     fl.add_argument("--to", dest="end", type=int, default=10 ** 9)
     fl.add_argument("--limit", type=int, default=60)
     common(fl)
     fl.set_defaults(fn=cmd_flags)
+
+    lo = sub.add_parser("locate", help="where one domain's bytes sit in another (e.g. the save inside work RAM)")
+    lo.add_argument("export")
+    lo.add_argument("--frame", type=int, required=True, help="a frame with snapshots of both domains")
+    lo.add_argument("--domain", required=True, help="the block to look for, e.g. CartRAM")
+    lo.add_argument("--inside", required=True, help="the domain to search, e.g. WRAM")
+    lo.add_argument("--range", nargs=2, metavar=("START", "LENGTH"), help="only this part of --domain")
+    lo.add_argument("--top", type=int, default=5)
+    common(lo)
+    lo.set_defaults(fn=cmd_locate)
 
     t = sub.add_parser("timeline", help="segments of the movie by a watched variable (e.g. the current room)")
     t.add_argument("export")

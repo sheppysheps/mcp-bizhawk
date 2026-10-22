@@ -21,7 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lag and every memory snapshot. `movie_export.py` adds `execs` (with
   `--writes` and register grouping), `writes --bits`, `flags` (first set and
   cleared frame of each bit, for item and event flags) and `shots --dark`
-  (finds fades by screenshot brightness).
+  (finds fades by screenshot brightness). `flags --snapshots DOMAIN` finds
+  flags from periodic snapshots when their address is unknown, and `locate`
+  finds where one domain's bytes sit in another (the live copy of the save
+  file in work RAM).
 
 - **Movie research for BizHawk 1.x** (`lua/legacy/movie_recorder.lua`, the
   `skills/movie-research` skill): records what a movie does, frame by frame,

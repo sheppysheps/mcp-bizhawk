@@ -136,6 +136,36 @@ class Export(unittest.TestCase):
         self.assertIn("0xD001 bit 7", ranged)
         self.assertNotIn("0xD000", ranged)
 
+    def test_flags_from_snapshots_find_unknown_flags(self):
+        # Offset 2 bit 5 is a pickup between frames 200 and 300; offset 0 is a
+        # timer that goes up and down; offset 3 bit 0 starts set (not a pickup).
+        snaps = {(100, "WRAM"): bytes([1, 0, 0x00, 1]), (200, "WRAM"): bytes([2, 0, 0x00, 1]),
+                 (300, "WRAM"): bytes([1, 0, 0x20, 1]), (400, "WRAM"): bytes([2, 0, 0x20, 1]),
+                 (300, "HRAM"): bytes([0xFF])}
+        d = write_export(self.folder("e"), snapshots=snaps, frames=400)
+        code, text = run(["flags", d, "--snapshots", "WRAM", "--once"])
+        self.assertIn("1 bits set once and never cleared (WRAM offsets, from 4 snapshots)", text)
+        self.assertIn("0x0002 bit 5  first set         200-300", text)
+        rows = movie_export.snapshot_bits(d, [s for s in movie_export.load(d)["snapshots"] if s["domain"] == "WRAM"])
+        timer = [r for r in rows if r["address"] == "0x0000"]
+        self.assertTrue(all(r["sets"] + r["clears"] > 1 for r in timer))
+        # --from drops early snapshots; --range limits the offsets.
+        code, text = run(["flags", d, "--snapshots", "WRAM", "--range", "0", "2", "--from", "300"])
+        self.assertIn("2 bits changed", text)
+        code, text = run(["flags", d, "--snapshots", "OAM"])
+        self.assertIn("fewer than 2 OAM snapshots", text)
+
+    def test_locate_finds_the_save_inside_work_ram(self):
+        save = bytes([1, 0, 2, 9, 7]) + b"\xFF" * 11
+        wram = bytes(10) + bytes([1, 0, 2, 9, 8]) + bytes(5) + bytes([1, 0, 2, 9, 7]) + bytes(4)
+        d = write_export(self.folder("e"), snapshots={(50, "CartRAM"): save, (50, "WRAM"): wram}, frames=60)
+        code, text = run(["locate", d, "--frame", "50", "--domain", "CartRAM", "--inside", "WRAM"])
+        self.assertEqual(code, 0)
+        self.assertIn("block of 5 bytes", text)
+        self.assertIn("exact copies at: 0x0014", text)
+        self.assertIn("0x000A: 4/5 bytes match", text)
+        self.assertEqual(run(["locate", d, "--frame", "51", "--domain", "CartRAM", "--inside", "WRAM"])[0], 1)
+
     def test_writes_filter_and_limit(self):
         ws = [(n, 0xC000 + (n % 2), n, n + 1, "0x0150") for n in range(1, 9)]
         f = write_export(self.folder("a"), writes=ws)
