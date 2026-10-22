@@ -36,6 +36,13 @@ class Helpers(unittest.TestCase):
                         "shot_f0000200_every.png", ""):
                 self.assertIsNone(label_server.shot_path(d, bad), bad)
 
+    def test_requires_vocabulary_is_kept_and_extended(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertNotIn("vocab", label_server.load_labels(d))
+            label_server.save_labels(d, {"version": 1, "places": {}, "events": {}, "vocab": {"requires": ["key"]}})
+            data = label_server.load_labels(d, ["double jump", "key"])
+            self.assertEqual(data["vocab"]["requires"], ["key", "double jump"])
+
     def test_validate_labels(self):
         self.assertIsNone(label_server.validate_labels({"version": 1, "places": {}, "events": {}, "items": []}))
         self.assertIn("object", label_server.validate_labels([]))

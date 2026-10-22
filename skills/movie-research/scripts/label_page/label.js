@@ -43,6 +43,54 @@ function isLabeled(ev) {
   return Boolean(l && l.kind);
 }
 
+/** The requirement names in a Requires text ("none" and blanks dropped). Returns: array of strings. */
+function requireTokens(text) {
+  return (text || "").split(",").map((t) => t.trim()).filter((t) => t && t.toLowerCase() !== "none");
+}
+
+/** Draw one checkbox per vocabulary requirement, ticked when the current
+ *  event's Requires text names it. Returns: nothing. */
+function renderRequireBoxes() {
+  const box = $("require-boxes");
+  box.replaceChildren();
+  const names = (labels.vocab && labels.vocab.requires) || [];
+  const have = requireTokens($("requires").value);
+  for (const name of names) {
+    const label = document.createElement("label");
+    label.className = "check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = have.includes(name);
+    cb.addEventListener("change", () => {
+      const ev = shown[current];
+      if (!ev) return;
+      let list = requireTokens($("requires").value).filter((t) => t !== name);
+      if (cb.checked) list.push(name);
+      $("requires").value = list.join(", ");
+      eventLabels(ev).requires = $("requires").value;
+      queueSave();
+    });
+    label.append(cb, document.createTextNode(` ${name}`));
+    box.appendChild(label);
+  }
+}
+
+/** Put "none" into Requires of every labeled event (one with a kind) whose
+ *  Requires is still empty. Returns: nothing. */
+function fillNone() {
+  let n = 0;
+  for (const ev of events) {
+    const l = labels.events[String(ev.frame)];
+    if (l && l.kind && !(l.requires || "").trim()) {
+      l.requires = "none";
+      n += 1;
+    }
+  }
+  if (n) queueSave();
+  render();
+  $("status").textContent = n ? `"none" filled in ${n} events; saving` : "nothing to fill";
+}
+
 /** Shorten a long hex value to its ends ("77FFFFFF…0000"). Returns: string. */
 function short(hex) {
   return hex.length > 16 ? `${hex.slice(0, 8)}…${hex.slice(-4)}` : hex;
@@ -143,6 +191,7 @@ function render() {
   }
   const l = labels.events[String(ev.frame)] || {};
   for (const f of FIELDS) $(f).value = l[f] || "";
+  renderRequireBoxes();
 }
 
 /** Save the labels soon (debounced). Returns: nothing. */
@@ -176,8 +225,10 @@ async function start() {
       eventLabels(ev)[f] = $(f).value;
       queueSave();
       if (f === "kind") refreshList();
+      if (f === "requires") renderRequireBoxes();
     });
   }
+  $("fill-none").addEventListener("click", fillNone);
   $("unlabeled").addEventListener("change", render);
   $("guess-filter").addEventListener("change", () => { current = 0; render(); });
   document.addEventListener("keydown", (e) => {

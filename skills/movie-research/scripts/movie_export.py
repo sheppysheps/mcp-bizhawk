@@ -370,10 +370,13 @@ def timeline(export, address, width=1, big_endian=False, min_frames=1):
     return merged
 
 
-def events(export, sources, cluster=60, lag_min=5, fades=None):
+def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None):
     """Transitions in a capture: changes of named watched variables, grouped.
 
-    Each source is (name, address, width), e.g. ("room", 0xC3EF, 3). Changes
+    Each source is (name, address, width), e.g. ("room", 0xC3EF, 3).
+    `only_pcs` maps a source name to the writer PCs that count for it (e.g. a
+    byte that is a room ID when the door code writes it and scratch state
+    otherwise); its other changes are dropped. Changes
     of all sources within `cluster` frames of the previous change join one
     event. Each event gets the nearest lag burst (a run of at least `lag_min`
     lag frames starting up to 10 frames before and 60 after the first change),
@@ -400,6 +403,9 @@ def events(export, sources, cluster=60, lag_min=5, fades=None):
             # A value written in two halves lands over two frames: look at both.
             near = by_frame.get(seg["start"] - 1, []) + by_frame.get(seg["start"], [])
             pcs = sorted({w["pc"] for w in near if int(w["address"], 16) in wanted})
+            allowed = (only_pcs or {}).get(name)
+            if allowed is not None and not any(int(pc, 16) in allowed for pc in pcs):
+                continue
             changes.append({"source": name, "frame": seg["start"], "old": prev["value"], "new": seg["value"],
                             "width": width, "pcs": pcs})
     changes.sort(key=lambda c: c["frame"])
@@ -779,6 +785,21 @@ def cmd_shots(args):
     _emit(args, rows, lines)
 
 
+def parse_only_pcs(pairs):
+    """Turn --only-pc NAME PCS pairs into {name: {pc, ...}}.
+
+    Returns: dict, or None when no pairs were given. Raises ValueError on a
+    PC that isn't a number.
+    Requires: nothing.
+    """
+    if not pairs:
+        return None
+    out = {}
+    for name, pcs in pairs:
+        out.setdefault(name, set()).update(int(p, 0) for p in pcs.split(",") if p.strip())
+    return out
+
+
 def cmd_events(args):
     """Transitions grouped from named watched variables, with lag, screenshots
     and a guessed method. Returns: exit code 0, or 1 when a source wasn't watched."""
@@ -790,7 +811,8 @@ def cmd_events(args):
         median = measure_shots(args.export, shots)
         fades = [s["frame"] for s in shots if s["brightness"] <= median * args.fades]
     try:
-        rows = events(e, sources, cluster=args.cluster, lag_min=args.lag_min, fades=fades)
+        rows = events(e, sources, cluster=args.cluster, lag_min=args.lag_min, fades=fades,
+                      only_pcs=parse_only_pcs(args.only_pc))
     except ValueError as err:
         print(err)
         return 1
@@ -918,6 +940,9 @@ def main(argv=None):
     ev.add_argument("--fades", type=float, metavar="FRACTION",
                     help="also use screenshots at or below this fraction of the median brightness (e.g. 0.5); "
                          "dark ones no change explains are listed as unexplained fades")
+    ev.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
+                    help="count a source's changes only when one of these writer PCs made them, e.g. "
+                         "room 0x5E3F,0x5CC0 (a byte that is scratch state for other code)")
     ev.add_argument("--cluster", type=int, default=60, help="changes this many frames apart join one event")
     ev.add_argument("--lag-min", type=int, default=5, help="shortest lag run that counts as a load")
     ev.add_argument("--from", dest="start", type=int, default=0)

@@ -43,7 +43,7 @@ PAGE_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
               "/label.js": ("label.js", "text/javascript; charset=utf-8"),
               "/label.css": ("label.css", "text/css; charset=utf-8")}
 MAX_LABELS_BYTES = 4 * 1024 * 1024
-LABEL_KEYS = {"version", "places", "events", "items"}
+LABEL_KEYS = {"version", "places", "events", "items", "vocab"}
 HEADERS = {
     # Scripts and styles only from this server, no inline code, no framing.
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
@@ -83,8 +83,8 @@ def validate_labels(data):
     """Check a labels document before it's written.
 
     Returns: None if it's acceptable, else a short reason. Accepts a JSON
-    object whose keys are among LABEL_KEYS, with "places" and "events"
-    objects and "items" a list when present.
+    object whose keys are among LABEL_KEYS, with "places", "events" and
+    "vocab" objects and "items" a list when present.
     Requires: nothing.
     """
     if not isinstance(data, dict):
@@ -92,19 +92,31 @@ def validate_labels(data):
     extra = set(data) - LABEL_KEYS
     if extra:
         return f"unexpected keys: {', '.join(sorted(extra))}"
-    for key, kind in (("places", dict), ("events", dict), ("items", list)):
+    for key, kind in (("places", dict), ("events", dict), ("vocab", dict), ("items", list)):
         if key in data and not isinstance(data[key], kind):
             return f"{key} must be a {'list' if kind is list else 'JSON object'}"
     return None
 
 
-def load_labels(folder):
-    """Read <folder>/labels.json. Returns: the labels dict, or an empty one. Requires: read access."""
+def load_labels(folder, requires=None):
+    """Read <folder>/labels.json.
+
+    `requires` (a list of requirement names, e.g. abilities, items, story
+    flags) becomes the page's checkbox list; names already in the file's
+    vocab are kept, new ones are added after them.
+    Returns: the labels dict, or an empty one.
+    Requires: read access to the folder.
+    """
     path = os.path.join(folder, "labels.json")
-    if not os.path.exists(path):
-        return {"version": 1, "places": {}, "events": {}, "items": []}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    data = {"version": 1, "places": {}, "events": {}, "items": []}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    if requires:
+        vocab = data.setdefault("vocab", {})
+        known = vocab.setdefault("requires", [])
+        known.extend(r for r in requires if r not in known)
+    return data
 
 
 def save_labels(folder, data):
@@ -119,8 +131,9 @@ def save_labels(folder, data):
     os.replace(tmp, path)
 
 
-def build_events(folder, sources, fades=None, cluster=60, lag_min=5):
+def build_events(folder, sources, fades=None, cluster=60, lag_min=5, only_pcs=None):
     """The events the page shows, with values as hex text for display.
+    `only_pcs` is passed to movie_export.events.
 
     Returns: list of event dicts from movie_export.events, each change's
     "old"/"new" also given as "old_hex"/"new_hex" and "key" ("source:VALUE",
@@ -133,7 +146,7 @@ def build_events(folder, sources, fades=None, cluster=60, lag_min=5):
         shots = movie_export.list_shots(folder)
         median = movie_export.measure_shots(folder, shots)
         dark = [s["frame"] for s in shots if s["brightness"] <= median * fades]
-    rows = movie_export.events(e, sources, cluster=cluster, lag_min=lag_min, fades=dark)
+    rows = movie_export.events(e, sources, cluster=cluster, lag_min=lag_min, fades=dark, only_pcs=only_pcs)
     for r in rows:
         for c in r["changes"]:
             width = 2 * c["width"]
@@ -144,11 +157,12 @@ def build_events(folder, sources, fades=None, cluster=60, lag_min=5):
 
 # ── Server ────────────────────────────────────────────────────────────────
 
-def make_handler(folder, token, events, port_ref):
+def make_handler(folder, token, events, port_ref, requires=None):
     """Build the request handler class bound to one export folder and token.
 
     Returns: a BaseHTTPRequestHandler subclass. `port_ref` is a one-item list
-    holding the bound port (known only after binding).
+    holding the bound port (known only after binding); `requires` seeds the
+    requirement checkboxes (see load_labels).
     Requires: the page files in PAGE_DIR.
     """
 
@@ -192,7 +206,8 @@ def make_handler(folder, token, events, port_ref):
                 with open(os.path.join(PAGE_DIR, name), "rb") as f:
                     self._send(200, f.read(), ctype)
             elif path == "/api/events":
-                self._send(200, {"folder": os.path.basename(folder), "events": events, "labels": load_labels(folder)})
+                self._send(200, {"folder": os.path.basename(folder), "events": events,
+                                 "labels": load_labels(folder, requires)})
             elif path.startswith("/shots/"):
                 file = shot_path(folder, path[len("/shots/"):])
                 if not file:
@@ -243,16 +258,16 @@ def make_handler(folder, token, events, port_ref):
     return Handler
 
 
-def serve(folder, sources, port=8770, fades=None, token=None):
+def serve(folder, sources, port=8770, fades=None, token=None, requires=None, only_pcs=None):
     """Start the server (blocking until Ctrl+C) on 127.0.0.1 only.
 
     Returns: None. Prints the URL with the session token.
     Requires: an export folder; a free port (0 picks one).
     """
     token = token or secrets.token_urlsafe(24)
-    events = build_events(folder, sources, fades=fades)
+    events = build_events(folder, sources, fades=fades, only_pcs=only_pcs)
     port_ref = [port]
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(folder, token, events, port_ref))
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(folder, token, events, port_ref, requires))
     port_ref[0] = server.server_address[1]
     print(f"{len(events)} events from {folder}")
     print(f"open http://127.0.0.1:{port_ref[0]}/?token={token}")
@@ -272,13 +287,20 @@ def main(argv=None):
     p.add_argument("--source", nargs=3, action="append", required=True, metavar=("NAME", "ADDRESS", "WIDTH"),
                    help="a watched variable that changes at transitions, e.g. room 0xC3EF 3 (repeatable)")
     p.add_argument("--fades", type=float, metavar="FRACTION", help="also list dark screenshots (see events --fades)")
+    p.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
+                   help="count a source's changes only from these writer PCs (see events --only-pc)")
     p.add_argument("--port", type=int, default=8770, help="port on 127.0.0.1 (0 picks a free one)")
+    p.add_argument("--requires", metavar="LIST",
+                   help="comma-separated requirement names shown as checkboxes (abilities, items, story flags), "
+                        "e.g. \"double jump,key,boss 1\"; kept in labels.json")
     args = p.parse_args(argv)
     if not os.path.exists(os.path.join(args.export, "frames.tsv")):
         print(f"{args.export}: not a movie_recorder export folder")
         return 1
     sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
-    serve(args.export, sources, port=args.port, fades=args.fades)
+    requires = [r.strip() for r in (args.requires or "").split(",") if r.strip()]
+    serve(args.export, sources, port=args.port, fades=args.fades, requires=requires,
+          only_pcs=movie_export.parse_only_pcs(args.only_pc))
     return 0
 
 

@@ -15,6 +15,7 @@
   <select id="guess-filter" aria-label="Filter by guessed method">
     <option value="">all methods</option>
   </select>
+  <button type="button" id="fill-none" title="Labeled events (with a kind) whose Requires is empty get &quot;none&quot;">Fill "none" in labeled events</button>
   <span id="status" role="status">loading</span>
 </header>
 <main>
@@ -33,7 +34,8 @@
       <label>Kind <select id="kind"></select></label>
       <label>Exit method (at the origin) <select id="exit"></select></label>
       <label>Entry state (on arrival) <select id="entry"></select></label>
-      <label>Requires <input id="requires" placeholder="none, a form, an item, a key..."></label>
+      <label>Requires <input id="requires" placeholder="none, or tick below / type, comma-separated"></label>
+      <div class="wide" id="require-boxes" aria-label="Requirements"></div>
       <label class="wide">Notes <textarea id="notes" rows="3"></textarea></label>
     </div>
     <p class="hint">Keys: <kbd>j</kbd> previous, <kbd>k</kbd> next (outside text fields). Changes save automatically.</p>
