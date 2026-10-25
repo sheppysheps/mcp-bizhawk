@@ -349,6 +349,27 @@ class Export(unittest.TestCase):
         self.assertEqual(movie_export.parse_only_pcs([["door", "0x5E3F,0x5CC0"], ["door", "0x610E"]]),
                          {"door": {0x5E3F, 0x5CC0, 0x610E}})
 
+    def test_catalog_builds_rooms_and_directed_doors(self):
+        rows = [{"frame": 100, "lag": 8, "guess": "load", "changes": [{"source": "room", "new": 0x10, "width": 1, "pcs": ["0x5E3F"]}]},
+                {"frame": 200, "lag": 0, "guess": "instant", "changes": [{"source": "room", "new": 0x20, "width": 1, "pcs": ["0x5E3F"]}]},
+                {"frame": 300, "lag": 0, "guess": "instant", "changes": [{"source": "room", "new": 0x10, "width": 1, "pcs": ["0x5E3F"]}]}]
+        labels = {"events": {"100": {"kind": "door", "arrival": "DF1: Lobby", "requires": "Bolo"},
+                             "200": {"kind": "edge scroll", "arrival": "DF2: Hall", "requires": "none"},
+                             "250": {"kind": "not a transition", "arrival": "DF2: Hall"},
+                             "300": {"kind": "edge scroll", "arrival": "DF3: Lake", "requires": "none"}}}
+        out = movie_export.catalog(rows, labels, capture="x")
+        places = {p["name"]: p for p in out["rooms"]["places"]}
+        self.assertEqual(list(places), ["DF1: Lobby", "DF2: Hall", "DF3: Lake"])
+        self.assertEqual(places["DF1: Lobby"]["region"], "DF")
+        # room 10 arrived in two different places: a conflict, not an ID.
+        self.assertEqual(out["rooms"]["conflicts"], {"room:10": ["DF1: Lobby", "DF3: Lake"]})
+        self.assertEqual(places["DF3: Lake"]["conflicting_values"], ["room:10"])
+        self.assertEqual([(d["from"], d["to"], d["frames"]) for d in out["doors"]["doors"]],
+                         [("DF1: Lobby", "DF2: Hall", [200]), ("DF2: Hall", "DF3: Lake", [300])])
+        self.assertEqual(out["items"]["items"], [])
+        self.assertEqual(movie_export.region_of("L2: Monkey Claw Cave"), "L")
+        self.assertEqual(movie_export.region_of("Swamp"), "Swamp")
+
     def test_execs_without_execs_file(self):
         f = write_export(self.folder("a"))
         _, text = run(["execs", f])

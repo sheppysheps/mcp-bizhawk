@@ -25,6 +25,8 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
                                      transitions: changes of named variables grouped,
                                      with writer PCs, lag burst, screenshots before and
                                      after, and a guessed method (load, fade, instant)
+  catalog  <export> --source ...     rooms.json, doors.json, items.json from the
+                                     labeling station's labels.json
   shots    <export> [--dark 0.5]     screenshots with mean brightness; --dark lists
                                      dips (fades, black transition screens)
   compare  <a> <b>                   first frame where two recordings of the same
@@ -455,6 +457,93 @@ def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None, sk
         if g["shot_after"]:
             g["shot_after"] = g["shot_after"]["file"]
     return groups
+
+
+NOT_TRANSITIONS = {"not a transition", "menu", ""}
+
+
+def region_of(place):
+    """The region of a place name: the prefix of a numbered room ("DF9: Lobby"
+    -> "DF", "L2: Cave" -> "L"), the part before a colon otherwise, else the
+    name itself. Returns: str. Requires: nothing.
+    """
+    m = re.match(r"\s*([A-Za-z]+)\d+\s*:", place)
+    if m:
+        return m.group(1)
+    return place.split(":")[0].strip() if ":" in place else place
+
+
+def catalog(rows, labels, capture=""):
+    """Rooms, doors and items catalogs from labeled events (labeling station).
+
+    The person's "Arrived in" names are the ground truth for places; the
+    watched values seen on arrival are evidence. A value that arrived in more
+    than one place is listed as a conflict (it isn't a place ID on its own).
+    Doors are directed: from the previous labeled place to this one, merged
+    when kind, doors and requirements agree, with every frame they were used.
+    Format "draft-1" (the shared findings format is still being agreed).
+    Returns: dict {"rooms": {...}, "doors": {...}, "items": {...}}.
+    Requires: `rows` from events(); `labels` as saved by label_server.
+    """
+    by_frame = {r["frame"]: r for r in rows}
+    head = {"format": "draft-1", "capture": capture}
+    places, value_names, doors, prev = {}, {}, {}, None
+    for key in sorted(labels.get("events", {}), key=lambda k: int(k) if k.isdigit() else -1):
+        if not key.isdigit():
+            continue
+        frame, lab = int(key), labels["events"][key]
+        kind = (lab.get("kind") or "").strip()
+        place = (lab.get("arrival") or "").strip()
+        if kind in NOT_TRANSITIONS or not place:
+            continue
+        ev = by_frame.get(frame, {"changes": [], "lag": 0, "guess": "manual"})
+        values = {c["source"]: f"{c['new']:0{2 * c['width']}X}" for c in ev["changes"]}
+        p = places.setdefault(place, {"name": place, "region": region_of(place), "visits": [], "values": {}})
+        p["visits"].append(frame)
+        for source, value in values.items():
+            p["values"].setdefault(f"{source}:{value}", []).append(frame)
+            value_names.setdefault(f"{source}:{value}", set()).add(place)
+        if prev is not None and prev != place:
+            fields = ("exit_door", "entry_door", "exit", "entry", "requires", "requires_back", "leave_requires")
+            info = {f: (lab.get(f) or "").strip() for f in fields}
+            dkey = (prev, place, kind) + tuple(info[f] for f in fields)
+            d = doors.setdefault(dkey, dict({"from": prev, "to": place, "kind": kind, "frames": [], "evidence": []},
+                                            **info))
+            d["frames"].append(frame)
+            d["evidence"].append({"frame": frame, "guess": ev["guess"], "lag": ev["lag"],
+                                  "changes": [{"source": c["source"], "new": values.get(c["source"]),
+                                               "pcs": c["pcs"]} for c in ev["changes"]],
+                                  "notes": (lab.get("notes") or "").strip()})
+        prev = place
+    conflicts = {v: sorted(n) for v, n in value_names.items() if len(n) > 1}
+    for p in places.values():
+        p["conflicting_values"] = sorted(v for v in p["values"] if v in conflicts)
+    return {"rooms": dict(head, places=sorted(places.values(), key=lambda p: p["visits"][0]), conflicts=conflicts),
+            "doors": dict(head, doors=sorted(doors.values(), key=lambda d: d["frames"][0])),
+            "items": dict(head, items=labels.get("items") or [],
+                          note="items are labeled separately; none labeled yet" if not labels.get("items") else "")}
+
+
+def cmd_catalog(args):
+    """Write rooms.json, doors.json and items.json from labels.json. Returns: exit code."""
+    e = load(args.export)
+    path = os.path.join(args.export, "labels.json")
+    if not os.path.exists(path):
+        print(f"{path} not found: label the capture first (label_server.py)")
+        return 1
+    with open(path, encoding="utf-8") as f:
+        labels = json.load(f)
+    sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
+    rows = events(e, sources, only_pcs=parse_only_pcs(args.only_pc), skip_pcs=parse_only_pcs(args.skip_pc))
+    out = catalog(rows, labels, capture=os.path.basename(os.path.normpath(args.export)))
+    target = args.out or args.export
+    os.makedirs(target, exist_ok=True)
+    for name, data in out.items():
+        with open(os.path.join(target, f"{name}.json"), "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, indent=1, ensure_ascii=False)
+    print(f"{len(out['rooms']['places'])} places ({len(out['rooms']['conflicts'])} conflicting values), "
+          f"{len(out['doors']['doors'])} doors, {len(out['items']['items'])} items -> {target}")
+    return 0
 
 
 def snapshot_hash(folder, snap):
@@ -1016,6 +1105,15 @@ def main(argv=None):
     ev.add_argument("--limit", type=int, default=40)
     common(ev)
     ev.set_defaults(fn=cmd_events)
+
+    ca = sub.add_parser("catalog", help="rooms.json, doors.json and items.json from the labeling station's labels")
+    ca.add_argument("export")
+    ca.add_argument("--source", nargs=3, action="append", required=True, metavar=("NAME", "ADDRESS", "WIDTH"),
+                    help="the same sources the labels were made with")
+    ca.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"))
+    ca.add_argument("--skip-pc", nargs=2, action="append", metavar=("NAME", "PCS"))
+    ca.add_argument("--out", help="folder for the JSON files (default: the export folder)")
+    ca.set_defaults(fn=cmd_catalog)
 
     sh = sub.add_parser("shots", help="screenshots with mean brightness; --dark finds fades")
     sh.add_argument("export")
