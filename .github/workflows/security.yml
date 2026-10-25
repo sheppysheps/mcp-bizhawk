@@ -99,7 +99,9 @@ jobs:
             git checkout -- package-lock.json
             if [ -n "$SUBSET" ]; then
               echo "Deferring non-patch updates; retrying with: $SUBSET"
-              npm update $SUBSET
+              # Split the space-separated names into an array on purpose.
+              read -ra PKGS <<< "$SUBSET"
+              npm update "${PKGS[@]}"
               node .github/scripts/lockfile-gate.mjs /tmp/lock.before.json package-lock.json > /tmp/gate.json
             else
               echo '{"moves":[],"patch":[],"nonPatch":[],"added":[],"removed":[],"clean":true}' > /tmp/gate.json

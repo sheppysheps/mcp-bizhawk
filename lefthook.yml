@@ -1,11 +1,18 @@
 # Git hooks for this repo, managed by lefthook (https://lefthook.dev).
 # Install once per clone: `lefthook install`. Never bypass a failing hook
 # (--no-verify, LEFTHOOK=0) unless Sheppysheps says so for a specific commit.
-# pre-commit stays fast (asset guard only); tests run on pre-push.
+# pre-commit stays fast (asset guard, plus linters only for staged files they
+# cover); tests run on pre-push.
 pre-commit:
   commands:
     asset-guard:
       run: bash scripts/guard-assets.sh
+    actionlint:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: actionlint {staged_files}
+    shellcheck:
+      glob: "*.sh"
+      run: shellcheck {staged_files}
 
 pre-push:
   commands:
