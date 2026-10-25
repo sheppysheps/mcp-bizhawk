@@ -370,6 +370,33 @@ class Export(unittest.TestCase):
         self.assertEqual(movie_export.region_of("L2: Monkey Claw Cave"), "L")
         self.assertEqual(movie_export.region_of("Swamp"), "Swamp")
 
+    def test_video_overlay_puts_each_input_on_its_own_frame(self):
+        frames = [{"frame": f, "lag": f == 12, "input": "A" if f in (11, 12) else "."} for f in range(10, 14)]
+        ass = movie_export.input_overlay_ass(frames, 10, 13, 60.0, 160, 144, 24, 12)
+        events = [l for l in ass.splitlines() if l.startswith("Dialogue:")]
+        texts = [l.split(",", 9)[9] for l in events]
+        self.assertEqual(texts, ["-", "A", "A   LAG", "-"])
+        # Frame 11 is video frame 1 (t = 1.67 cs; frame 12 is at 3.33 cs): its
+        # subtitle runs from halfway before it (0.83 -> 1 cs) to halfway after
+        # it (2.5 -> 2 cs), so it covers frame 11 and no other.
+        self.assertEqual(events[1].split(",")[1:3], ["0:00:00.01", "0:00:00.02"])
+        self.assertEqual(movie_export._ass_time(3725.5), "1:02:05.50")
+
+    def test_video_command_and_missing_frames(self):
+        d = write_export(self.folder("v"), frames=3)
+        grey = [(9, 9, 9, 255)] * 4
+        for f in (1, 3):
+            movie_export.png.write_png(os.path.join(d, f"shot_f{f:07d}_every.png"), 2, 2, grey)
+        code, text = run(["video", d, "--out", os.path.join(d, "x.mp4")])
+        self.assertEqual(code, 1)
+        self.assertIn("1 frames between 1 and 3 have no screenshot (first 2)", text)
+        movie_export.png.write_png(os.path.join(d, "shot_f0000002_every.png"), 2, 2, grey)
+        code, text = run(["video", d, "--out", os.path.join(d, "x.mp4"), "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertIn("-start_number 1 -i shot_f%07d_every.png -frames:v 3", text)
+        self.assertIn("eif\\:n+1\\:d", text)
+        self.assertTrue(os.path.exists(os.path.join(d, "video_overlay.ass")))
+
     def test_execs_without_execs_file(self):
         f = write_export(self.folder("a"))
         _, text = run(["execs", f])

@@ -27,6 +27,9 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
                                      after, and a guessed method (load, fade, instant)
   catalog  <export> --source ...     rooms.json, doors.json, items.json from the
                                      labeling station's labels.json
+  video    <export> --out run.mp4    MP4 from a pass with snapshot_every = 1, with the
+                                     frame number and each frame's input drawn under
+                                     the picture (needs ffmpeg)
   shots    <export> [--dark 0.5]     screenshots with mean brightness; --dark lists
                                      dips (fades, black transition screens)
   compare  <a> <b>                   first frame where two recordings of the same
@@ -457,6 +460,110 @@ def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None, sk
         if g["shot_after"]:
             g["shot_after"] = g["shot_after"]["file"]
     return groups
+
+
+GB_FPS = 4194304 / 70224  # Game Boy frame rate, ~59.7275; override with --fps for other systems
+DEFAULT_FONT = "C:/Windows/Fonts/consola.ttf" if os.name == "nt" else "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+
+
+def _ass_time(seconds):
+    """ASS timestamp h:mm:ss.cc. Returns: str. Requires: nothing."""
+    cs = max(0, int(round(seconds * 100)))
+    return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
+
+
+def input_overlay_ass(frames, start, end, fps, width, height, bar, font_size):
+    """ASS subtitles that show each frame's input (and LAG) in a bar under the picture.
+
+    One subtitle per run of frames with the same input and lag flag. ASS times
+    have 1/100 s precision, so each boundary sits halfway between two frames:
+    the rounding stays under half a frame and every frame shows its own row.
+    Video frame i is movie frame start + i.
+    Returns: the ASS file text.
+    Requires: frames rows from load() ({"frame", "lag", "input"}).
+    """
+    rows = [r for r in frames if start <= r["frame"] <= end]
+    head = ("[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\nWrapStyle: 2\n\n"
+            "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+            "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
+            "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            "Style: Input,Consolas,%d,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,"
+            "3,8,8,%d,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+            % (width, height + bar, font_size, (bar - font_size) // 2))
+    lines, run = [], None
+    for r in rows:
+        key = (r["input"], r["lag"])
+        if run and run[0] == key and r["frame"] == run[2] + 1:
+            run[2] = r["frame"]
+            continue
+        if run:
+            lines.append(run)
+        run = [key, r["frame"], r["frame"]]
+    if run:
+        lines.append(run)
+    out = [head]
+    for (inp, lag), a, b in lines:
+        text = (inp if inp not in ("", ".") else "-") + ("   LAG" if lag else "")
+        t0 = (a - start - 0.5) / fps
+        t1 = (b - start + 0.5) / fps
+        out.append(f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},Input,,0,0,0,,{text}\n")
+    return "".join(out)
+
+
+def video_command(folder, start, end, fps, scale, bar, font, ass_name, out_path, ffmpeg="ffmpeg"):
+    """The ffmpeg command that turns consecutive per-frame screenshots into an MP4.
+
+    Input: shot_f<frame>_every.png from `start` to `end` (a pass with
+    snapshot_every = 1). The picture is scaled `scale` times with nearest-
+    neighbour pixels, a black bar of `bar` pixels is added under it, the
+    movie frame number is drawn in the bar's left half, and the input overlay
+    (`ass_name`, relative to `folder`) on the right.
+    Returns: argument list (no shell), to run with cwd=folder.
+    Requires: ffmpeg with the drawtext and ass filters.
+    """
+    font_arg = font.replace("\\", "/").replace(":", "\\:")
+    vf = (f"scale=iw*{scale}:ih*{scale}:flags=neighbor,pad=iw:ih+{bar}:0:0:black,"
+          f"drawtext=fontfile='{font_arg}':text='frame %{{eif\\:n+{start}\\:d}}':fontcolor=white:"
+          f"fontsize={bar // 2}:x=8:y=h-{bar}+({bar}-text_h)/2,"
+          f"ass={ass_name}")
+    return [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-framerate", f"{fps:.6f}",
+            "-start_number", str(start), "-i", "shot_f%07d_every.png", "-frames:v", str(end - start + 1),
+            "-vf", vf, "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p", out_path]
+
+
+def cmd_video(args):
+    """Encode a capture's per-frame screenshots to an MP4 with frame and input overlay.
+    Returns: exit code (ffmpeg's, or 1 when frames are missing)."""
+    e = load(args.export)
+    every = sorted(s["frame"] for s in list_shots(args.export) if s["reason"] == "every")
+    if not every:
+        print("no per-frame screenshots: record a pass with snapshot_every = 1 and screenshots = true")
+        return 1
+    start = max(args.start, every[0])
+    end = min(args.end, every[-1])
+    have = set(every)
+    missing = [f for f in range(start, end + 1) if f not in have]
+    if missing:
+        print(f"{len(missing)} frames between {start} and {end} have no screenshot (first {missing[0]}); "
+              "the video needs every frame")
+        return 1
+    import subprocess  # noqa: PLC0415 - only this command runs a program
+    w, h, _ = png.read_png(os.path.join(args.export, f"shot_f{start:07d}_every.png"))
+    width, height, bar = w * args.scale, h * args.scale, max(24, 9 * args.scale)
+    ass_name = "video_overlay.ass"
+    with open(os.path.join(args.export, ass_name), "w", encoding="utf-8", newline="\n") as f:
+        f.write(input_overlay_ass(e["frames"], start, end, args.fps, width, height, bar, bar // 2))
+    out_path = os.path.abspath(args.out)
+    cmd = video_command(args.export, start, end, args.fps, args.scale, bar, args.font, ass_name, out_path,
+                        args.ffmpeg)
+    if args.dry_run:
+        print(" ".join(cmd))
+        return 0
+    print(f"encoding frames {start}..{end} ({end - start + 1} frames) to {out_path}")
+    # System access: runs ffmpeg (a program the user installed) with an argument
+    # list, no shell, inside the export folder; it reads that folder's
+    # screenshots and the overlay file and writes only the chosen output file.
+    return subprocess.run(cmd, cwd=args.export).returncode
 
 
 NOT_TRANSITIONS = {"not a transition", "menu", ""}
@@ -1114,6 +1221,18 @@ def main(argv=None):
     ca.add_argument("--skip-pc", nargs=2, action="append", metavar=("NAME", "PCS"))
     ca.add_argument("--out", help="folder for the JSON files (default: the export folder)")
     ca.set_defaults(fn=cmd_catalog)
+
+    vd = sub.add_parser("video", help="MP4 from per-frame screenshots, with frame counter and input overlay")
+    vd.add_argument("export")
+    vd.add_argument("--out", required=True, help="output file, e.g. run.mp4")
+    vd.add_argument("--from", dest="start", type=int, default=0)
+    vd.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    vd.add_argument("--fps", type=float, default=GB_FPS, help="frame rate (default: Game Boy, ~59.7275)")
+    vd.add_argument("--scale", type=int, default=4, help="pixel scale (nearest neighbour), default 4")
+    vd.add_argument("--font", default=DEFAULT_FONT, help="monospace font file for the frame counter")
+    vd.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg program (default: from PATH)")
+    vd.add_argument("--dry-run", action="store_true", help="print the ffmpeg command instead of running it")
+    vd.set_defaults(fn=cmd_video)
 
     sh = sub.add_parser("shots", help="screenshots with mean brightness; --dark finds fades")
     sh.add_argument("export")
