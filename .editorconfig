@@ -1,0 +1,13 @@
+# Editor settings (https://editorconfig.org).
+# Line endings must match .gitattributes, which stores all text as LF.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+# Two trailing spaces are a Markdown line break; don't strip them.
+trim_trailing_whitespace = false
