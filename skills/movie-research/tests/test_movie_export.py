@@ -303,6 +303,73 @@ class Export(unittest.TestCase):
         self.assertIn("f    110    10.0  range", text)
         self.assertNotIn("f    100", text)
 
+    def test_events_group_changes_and_guess_the_method(self):
+        # A 2-byte room pointer changes at 100 (with an 8-frame load) and at 300
+        # (no load); a door ID changes at 105 (joins the first event) and at 500
+        # (on its own, during a dark screenshot). A dark screenshot at 700 has
+        # no change near it.
+        writes = [(1, 0xC000, 0, 0x10, "init"), (1, 0xC001, 0, 0x40, "init"), (1, 0xC100, 0, 1, "init"),
+                  (100, 0xC000, 0x10, 0x20, "0x5FEF"), (100, 0xC001, 0x40, 0x41, "0x5FF9"),
+                  (105, 0xC100, 1, 2, "0x5E3F"), (300, 0xC000, 0x20, 0x30, "0x5FEF"), (500, 0xC100, 2, 3, "0x5E3F")]
+        f = write_export(self.folder("e"), writes=writes, frames=800, lag_frames=range(102, 110))
+        grey = lambda v: [(v, v, v, 255)] * 16  # noqa: E731
+        for frame, level, reason in ((90, 200, "every"), (130, "200", "change-0xC000"), (490, 200, "every"),
+                                     (510, 5, "every"), (600, 200, "every"), (700, 5, "every")):
+            movie_export.png.write_png(os.path.join(f, f"shot_f{frame:07d}_{reason}.png"), 4, 4, grey(int(level)))
+        e = movie_export.load(f)
+        rows = movie_export.events(e, [("room", 0xC000, 2), ("door", 0xC100, 1)], fades=[510, 700])
+        self.assertEqual([(r["frame"], r["guess"]) for r in rows],
+                         [(100, "load"), (300, "instant"), (500, "fade"), (700, "unexplained fade")])
+        first = rows[0]
+        self.assertEqual(first["lag"], 8)
+        self.assertEqual([(c["source"], c["old"], c["new"], c["pcs"]) for c in first["changes"]],
+                         [("room", 0x4010, 0x4120, ["0x5FEF", "0x5FF9"]), ("door", 1, 2, ["0x5E3F"])])
+        self.assertEqual(first["shot_before"], "shot_f0000090_every.png")
+        self.assertEqual(first["shot_after"], "shot_f0000130_change-0xC000.png")
+        code, text = run(["events", f, "--source", "room", "0xC000", "2", "--source", "door", "0xC100", "1",
+                          "--fades", "0.5"])
+        self.assertEqual(code, 0)
+        self.assertIn("4 events: 1 fade, 1 instant, 1 load, 1 unexplained fade", text)
+        self.assertIn("room 4010->4120 pc 0x5FEF,0x5FF9; door 01->02 pc 0x5E3F", text)
+        self.assertEqual(run(["events", f, "--source", "x", "0xD000", "1"])[0], 1)
+        # Only door-code writes count for "door": the change at 500 came from
+        # another routine, so that event goes (its dark shot stays, unexplained).
+        # The one at 105 also came from another routine, but it rides along
+        # with the room change at 100, so it stays.
+        rows = movie_export.events(e, [("room", 0xC000, 2), ("door", 0xC100, 1)], fades=[510, 700],
+                                   only_pcs={"door": {0x1234}})
+        self.assertEqual([(r["frame"], r["guess"]) for r in rows],
+                         [(100, "load"), (300, "instant"), (510, "unexplained fade"), (700, "unexplained fade")])
+        self.assertEqual([c["source"] for c in rows[0]["changes"]], ["room", "door"])
+        # skip_pcs drops only the listed writer's changes: the door change at
+        # 500 (by 0x5E3F) goes, the one at 105 rides along with the room.
+        rows = movie_export.events(e, [("room", 0xC000, 2), ("door", 0xC100, 1)], skip_pcs={"door": {0x5E3F}})
+        self.assertEqual([(r["frame"], [c["source"] for c in r["changes"]]) for r in rows],
+                         [(100, ["room", "door"]), (300, ["room"])])
+        self.assertEqual(movie_export.parse_only_pcs([["door", "0x5E3F,0x5CC0"], ["door", "0x610E"]]),
+                         {"door": {0x5E3F, 0x5CC0, 0x610E}})
+
+    def test_catalog_builds_rooms_and_directed_doors(self):
+        rows = [{"frame": 100, "lag": 8, "guess": "load", "changes": [{"source": "room", "new": 0x10, "width": 1, "pcs": ["0x5E3F"]}]},
+                {"frame": 200, "lag": 0, "guess": "instant", "changes": [{"source": "room", "new": 0x20, "width": 1, "pcs": ["0x5E3F"]}]},
+                {"frame": 300, "lag": 0, "guess": "instant", "changes": [{"source": "room", "new": 0x10, "width": 1, "pcs": ["0x5E3F"]}]}]
+        labels = {"events": {"100": {"kind": "door", "arrival": "DF1: Lobby", "requires": "Bolo"},
+                             "200": {"kind": "edge scroll", "arrival": "DF2: Hall", "requires": "none"},
+                             "250": {"kind": "not a transition", "arrival": "DF2: Hall"},
+                             "300": {"kind": "edge scroll", "arrival": "DF3: Lake", "requires": "none"}}}
+        out = movie_export.catalog(rows, labels, capture="x")
+        places = {p["name"]: p for p in out["rooms"]["places"]}
+        self.assertEqual(list(places), ["DF1: Lobby", "DF2: Hall", "DF3: Lake"])
+        self.assertEqual(places["DF1: Lobby"]["region"], "DF")
+        # room 10 arrived in two different places: a conflict, not an ID.
+        self.assertEqual(out["rooms"]["conflicts"], {"room:10": ["DF1: Lobby", "DF3: Lake"]})
+        self.assertEqual(places["DF3: Lake"]["conflicting_values"], ["room:10"])
+        self.assertEqual([(d["from"], d["to"], d["frames"]) for d in out["doors"]["doors"]],
+                         [("DF1: Lobby", "DF2: Hall", [200]), ("DF2: Hall", "DF3: Lake", [300])])
+        self.assertEqual(out["items"]["items"], [])
+        self.assertEqual(movie_export.region_of("L2: Monkey Claw Cave"), "L")
+        self.assertEqual(movie_export.region_of("Swamp"), "Swamp")
+
     def test_execs_without_execs_file(self):
         f = write_export(self.folder("a"))
         _, text = run(["execs", f])

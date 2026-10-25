@@ -21,6 +21,12 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
                                      address ran, raw or grouped by distinct values;
                                      --writes: registers at each write to a watch
                                      line with 'registers'
+  events   <export> --source room 0xC3EF 3 [--source ...] [--fades 0.5]
+                                     transitions: changes of named variables grouped,
+                                     with writer PCs, lag burst, screenshots before and
+                                     after, and a guessed method (load, fade, instant)
+  catalog  <export> --source ...     rooms.json, doors.json, items.json from the
+                                     labeling station's labels.json
   shots    <export> [--dark 0.5]     screenshots with mean brightness; --dark lists
                                      dips (fades, black transition screens)
   compare  <a> <b>                   first frame where two recordings of the same
@@ -33,6 +39,7 @@ Run `python movie_export.py <subcommand> -h` for options.
 """
 
 import argparse
+import bisect
 import csv
 import hashlib
 import json
@@ -365,6 +372,180 @@ def timeline(export, address, width=1, big_endian=False, min_frames=1):
     return merged
 
 
+def events(export, sources, cluster=60, lag_min=5, fades=None, only_pcs=None, skip_pcs=None):
+    """Transitions in a capture: changes of named watched variables, grouped.
+
+    Each source is (name, address, width), e.g. ("room", 0xC3EF, 3).
+    `only_pcs` maps a source name to the writer PCs that count for it (e.g. a
+    byte that is a room ID when the door code writes it and scratch state
+    otherwise); its other changes are dropped, unless they ride along with a
+    kept change of another source within `cluster` frames (entering an area
+    sets its first room from the area loader, not from the door code).
+    `skip_pcs` is the opposite, and usually the sturdier choice when every
+    level has its own door code: a source's changes made only by these
+    writers (known noise, e.g. a menu routine) are dropped, with the same
+    ride-along exception. Changes
+    of all sources within `cluster` frames of the previous change join one
+    event. Each event gets the nearest lag burst (a run of at least `lag_min`
+    lag frames starting up to 10 frames before and 60 after the first change),
+    the screenshots just before and just after, and a guessed method: "load"
+    (with a lag burst), "fade" (no burst, but a dark screenshot in the event)
+    or "instant". `fades` is an optional list of dark screenshot frames
+    (from shots --dark); dark frames that no change explains become events of
+    their own ("unexplained fade"), the lead to transitions without a known
+    variable.
+    Returns: list of {"frame", "end", "changes": [{"source", "frame", "old",
+    "new", "width", "pcs"}], "lag", "guess", "shot_before", "shot_after"}.
+    Raises ValueError when a source was never watched (see timeline).
+    Requires: an export loaded with load().
+    """
+    by_frame = {}
+    for w in export["writes"]:
+        if w["pc"] != "init":
+            by_frame.setdefault(w["frame"], []).append(w)
+    changes = []
+    for name, address, width in sources:
+        segs = timeline(export, address, width, min_frames=2)
+        wanted = {address + i for i in range(width)}
+        for prev, seg in zip(segs, segs[1:]):
+            # A value written in two halves lands over two frames: look at both.
+            near = by_frame.get(seg["start"] - 1, []) + by_frame.get(seg["start"], [])
+            pcs = sorted({w["pc"] for w in near if int(w["address"], 16) in wanted})
+            allowed = (only_pcs or {}).get(name)
+            skipped = (skip_pcs or {}).get(name, set())
+            kept = (allowed is None or any(int(pc, 16) in allowed for pc in pcs)) and not (
+                pcs and all(int(pc, 16) in skipped for pc in pcs))
+            changes.append({"source": name, "frame": seg["start"], "old": prev["value"], "new": seg["value"],
+                            "width": width, "pcs": pcs, "kept": kept})
+    anchors = [c for c in changes if c["kept"]]
+    changes = [c for c in changes if c["kept"] or any(
+        a["source"] != c["source"] and abs(a["frame"] - c["frame"]) <= cluster for a in anchors)]
+    for c in changes:
+        del c["kept"]
+    changes.sort(key=lambda c: c["frame"])
+    fade_frames = sorted(fades or [])
+    groups = []
+    for c in changes:
+        if groups and c["frame"] - groups[-1]["end"] <= cluster:
+            groups[-1]["changes"].append(c)
+            groups[-1]["end"] = c["frame"]
+        else:
+            groups.append({"frame": c["frame"], "end": c["frame"], "changes": [c]})
+    for f in fade_frames:
+        if not any(g["frame"] - cluster <= f <= g["end"] + cluster for g in groups):
+            groups.append({"frame": f, "end": f, "changes": []})
+    groups.sort(key=lambda g: g["frame"])
+
+    runs = sorted(r for r in lag_runs(export["frames"], top=10 ** 9) if r[1] >= lag_min)
+    shots = list_shots(export["folder"])
+    shot_frames = [s["frame"] for s in shots]
+    for g in groups:
+        near = [r for r in runs if g["frame"] - 10 <= r[0] <= g["end"] + 60]
+        g["lag"] = max((r[1] for r in near), default=0)
+        dark = any(g["frame"] - cluster <= f <= g["end"] + cluster for f in fade_frames)
+        if not g["changes"]:
+            g["guess"] = "unexplained fade"
+        elif g["lag"]:
+            g["guess"] = "load"
+        else:
+            g["guess"] = "fade" if dark else "instant"
+        i = bisect.bisect_left(shot_frames, g["frame"])
+        g["shot_before"] = shots[i - 1]["file"] if i > 0 else None
+        after = [s for s in shots[i:] if s["frame"] <= g["end"] + 200]
+        changed = [s for s in after if s["reason"].startswith("change")]
+        g["shot_after"] = (changed or after or [None])[0]
+        if g["shot_after"]:
+            g["shot_after"] = g["shot_after"]["file"]
+    return groups
+
+
+NOT_TRANSITIONS = {"not a transition", "menu", ""}
+
+
+def region_of(place):
+    """The region of a place name: the prefix of a numbered room ("DF9: Lobby"
+    -> "DF", "L2: Cave" -> "L"), the part before a colon otherwise, else the
+    name itself. Returns: str. Requires: nothing.
+    """
+    m = re.match(r"\s*([A-Za-z]+)\d+\s*:", place)
+    if m:
+        return m.group(1)
+    return place.split(":")[0].strip() if ":" in place else place
+
+
+def catalog(rows, labels, capture=""):
+    """Rooms, doors and items catalogs from labeled events (labeling station).
+
+    The person's "Arrived in" names are the ground truth for places; the
+    watched values seen on arrival are evidence. A value that arrived in more
+    than one place is listed as a conflict (it isn't a place ID on its own).
+    Doors are directed: from the previous labeled place to this one, merged
+    when kind, doors and requirements agree, with every frame they were used.
+    Format "draft-1" (the shared findings format is still being agreed).
+    Returns: dict {"rooms": {...}, "doors": {...}, "items": {...}}.
+    Requires: `rows` from events(); `labels` as saved by label_server.
+    """
+    by_frame = {r["frame"]: r for r in rows}
+    head = {"format": "draft-1", "capture": capture}
+    places, value_names, doors, prev = {}, {}, {}, None
+    for key in sorted(labels.get("events", {}), key=lambda k: int(k) if k.isdigit() else -1):
+        if not key.isdigit():
+            continue
+        frame, lab = int(key), labels["events"][key]
+        kind = (lab.get("kind") or "").strip()
+        place = (lab.get("arrival") or "").strip()
+        if kind in NOT_TRANSITIONS or not place:
+            continue
+        ev = by_frame.get(frame, {"changes": [], "lag": 0, "guess": "manual"})
+        values = {c["source"]: f"{c['new']:0{2 * c['width']}X}" for c in ev["changes"]}
+        p = places.setdefault(place, {"name": place, "region": region_of(place), "visits": [], "values": {}})
+        p["visits"].append(frame)
+        for source, value in values.items():
+            p["values"].setdefault(f"{source}:{value}", []).append(frame)
+            value_names.setdefault(f"{source}:{value}", set()).add(place)
+        if prev is not None and prev != place:
+            fields = ("exit_door", "entry_door", "exit", "entry", "requires", "requires_back", "leave_requires")
+            info = {f: (lab.get(f) or "").strip() for f in fields}
+            dkey = (prev, place, kind) + tuple(info[f] for f in fields)
+            d = doors.setdefault(dkey, dict({"from": prev, "to": place, "kind": kind, "frames": [], "evidence": []},
+                                            **info))
+            d["frames"].append(frame)
+            d["evidence"].append({"frame": frame, "guess": ev["guess"], "lag": ev["lag"],
+                                  "changes": [{"source": c["source"], "new": values.get(c["source"]),
+                                               "pcs": c["pcs"]} for c in ev["changes"]],
+                                  "notes": (lab.get("notes") or "").strip()})
+        prev = place
+    conflicts = {v: sorted(n) for v, n in value_names.items() if len(n) > 1}
+    for p in places.values():
+        p["conflicting_values"] = sorted(v for v in p["values"] if v in conflicts)
+    return {"rooms": dict(head, places=sorted(places.values(), key=lambda p: p["visits"][0]), conflicts=conflicts),
+            "doors": dict(head, doors=sorted(doors.values(), key=lambda d: d["frames"][0])),
+            "items": dict(head, items=labels.get("items") or [],
+                          note="items are labeled separately; none labeled yet" if not labels.get("items") else "")}
+
+
+def cmd_catalog(args):
+    """Write rooms.json, doors.json and items.json from labels.json. Returns: exit code."""
+    e = load(args.export)
+    path = os.path.join(args.export, "labels.json")
+    if not os.path.exists(path):
+        print(f"{path} not found: label the capture first (label_server.py)")
+        return 1
+    with open(path, encoding="utf-8") as f:
+        labels = json.load(f)
+    sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
+    rows = events(e, sources, only_pcs=parse_only_pcs(args.only_pc), skip_pcs=parse_only_pcs(args.skip_pc))
+    out = catalog(rows, labels, capture=os.path.basename(os.path.normpath(args.export)))
+    target = args.out or args.export
+    os.makedirs(target, exist_ok=True)
+    for name, data in out.items():
+        with open(os.path.join(target, f"{name}.json"), "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, indent=1, ensure_ascii=False)
+    print(f"{len(out['rooms']['places'])} places ({len(out['rooms']['conflicts'])} conflicting values), "
+          f"{len(out['doors']['doors'])} doors, {len(out['items']['items'])} items -> {target}")
+    return 0
+
+
 def snapshot_hash(folder, snap):
     """SHA-1 of one snapshot file. Returns: hex string, or None if missing."""
     path = os.path.join(folder, snap["file"])
@@ -673,6 +854,68 @@ def brightness(path):
     return total / max(1, width * height)
 
 
+BRIGHTNESS_CACHE = "brightness.tsv"
+
+
+def measure_shots(folder, shots):
+    """Add "brightness" (rounded to 0.1) to each screenshot record.
+
+    Decoding PNGs in pure Python is slow (minutes for ten thousand shots), so
+    results are kept in brightness.tsv in the export folder and reused while
+    a screenshot's size and modification time are unchanged. That file is the
+    only thing movie_export writes into a capture.
+    Returns: the median brightness, or 0.0 for an empty list.
+    Requires: brightness(); the screenshot files in `folder`; write access to
+    `folder` for the cache (skipped silently when it can't be written).
+    """
+    cache_path = os.path.join(folder, BRIGHTNESS_CACHE)
+    cache = {}
+    if os.path.exists(cache_path):
+        for r in read_tsv(cache_path):
+            cache[r["file"]] = (r["stamp"], float(r["brightness"]))
+    changed = False
+    for s in shots:
+        st = os.stat(os.path.join(folder, s["file"]))
+        stamp = f"{st.st_size}:{int(st.st_mtime)}"
+        hit = cache.get(s["file"])
+        if hit and hit[0] == stamp:
+            s["brightness"] = hit[1]
+        else:
+            s["brightness"] = round(brightness(os.path.join(folder, s["file"])), 1)
+            cache[s["file"]] = (stamp, s["brightness"])
+            changed = True
+    if changed:
+        try:
+            with open(cache_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write("file\tstamp\tbrightness\n")
+                for name, (stamp, value) in sorted(cache.items()):
+                    f.write(f"{name}\t{stamp}\t{value}\n")
+        except OSError:
+            pass
+    values = sorted(s["brightness"] for s in shots)
+    return values[len(values) // 2] if values else 0.0
+
+
+def dips(shots, fraction=0.5, window=4):
+    """Screenshots much darker than their neighbours: fades, not dark rooms.
+
+    A shot is a dip when its brightness is at most `fraction` times the
+    median of the `window` shots on each side of it. A level that is dark
+    throughout has no dips; a fade between two rooms does.
+    Returns: list of the dipping shots' frames, in order.
+    Requires: shots with "brightness" (measure_shots), sorted by frame.
+    """
+    out = []
+    for i, s in enumerate(shots):
+        around = [t["brightness"] for t in shots[max(0, i - window):i] + shots[i + 1:i + 1 + window]]
+        if not around:
+            continue
+        around.sort()
+        if s["brightness"] <= fraction * around[len(around) // 2]:
+            out.append(s["frame"])
+    return out
+
+
 def cmd_shots(args):
     """Screenshots with their mean brightness; --dark lists only dips (fades,
     black transition screens) below a fraction of the median. Returns: None."""
@@ -680,10 +923,7 @@ def cmd_shots(args):
     if not shots:
         _emit(args, [], ["no screenshots in that range"])
         return
-    for s in shots:
-        s["brightness"] = round(brightness(os.path.join(args.export, s["file"])), 1)
-    values = sorted(s["brightness"] for s in shots)
-    median = values[len(values) // 2]
+    median = measure_shots(args.export, shots)
     limit = median * args.dark if args.dark is not None else None
     rows = [s for s in shots if limit is None or s["brightness"] <= limit]
     shown = rows[:args.limit]
@@ -694,6 +934,52 @@ def cmd_shots(args):
     if len(rows) > len(shown):
         lines.append(f"  ... {len(rows) - len(shown)} more (raise --limit or use --json)")
     _emit(args, rows, lines)
+
+
+def parse_only_pcs(pairs):
+    """Turn --only-pc / --skip-pc NAME PCS pairs into {name: {pc, ...}}.
+
+    Returns: dict, or None when no pairs were given. Raises ValueError on a
+    PC that isn't a number.
+    Requires: nothing.
+    """
+    if not pairs:
+        return None
+    out = {}
+    for name, pcs in pairs:
+        out.setdefault(name, set()).update(int(p, 0) for p in pcs.split(",") if p.strip())
+    return out
+
+
+def cmd_events(args):
+    """Transitions grouped from named watched variables, with lag, screenshots
+    and a guessed method. Returns: exit code 0, or 1 when a source wasn't watched."""
+    e = load(args.export)
+    sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
+    fades = None
+    if args.fades is not None:
+        shots = list_shots(args.export)
+        measure_shots(args.export, shots)
+        fades = dips(shots, args.fades)
+    try:
+        rows = events(e, sources, cluster=args.cluster, lag_min=args.lag_min, fades=fades,
+                      only_pcs=parse_only_pcs(args.only_pc), skip_pcs=parse_only_pcs(args.skip_pc))
+    except ValueError as err:
+        print(err)
+        return 1
+    rows = [r for r in rows if args.start <= r["frame"] <= args.end]
+    counts = {}
+    for r in rows:
+        counts[r["guess"]] = counts.get(r["guess"], 0) + 1
+    lines = [f"{len(rows)} events: " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))]
+    for r in rows[:args.limit]:
+        what = "; ".join(f"{c['source']} {c['old']:0{2 * c['width']}X}->{c['new']:0{2 * c['width']}X}"
+                         + (f" pc {','.join(c['pcs'])}" if c["pcs"] else "") for c in r["changes"]) or "-"
+        lines.append(f"  f{r['frame']:>7}  {r['guess']:<16} lag {r['lag']:>3}  {what}")
+    if len(rows) > args.limit:
+        lines.append(f"  ... {len(rows) - args.limit} more (raise --limit or use --json)")
+    _emit(args, rows, lines)
+    return 0
 
 
 def cmd_compare(args):
@@ -797,6 +1083,37 @@ def main(argv=None):
     x.add_argument("--limit", type=int, default=40)
     common(x)
     x.set_defaults(fn=cmd_execs)
+
+    ev = sub.add_parser("events", help="transitions (doors, room loads, fades) from named watched variables")
+    ev.add_argument("export")
+    ev.add_argument("--source", nargs=3, action="append", required=True, metavar=("NAME", "ADDRESS", "WIDTH"),
+                    help="a watched variable that changes at transitions, e.g. room 0xC3EF 3 (repeatable)")
+    ev.add_argument("--fades", type=float, metavar="FRACTION",
+                    help="also use screenshots at or below this fraction of their neighbours' median brightness "
+                         "(e.g. 0.5): dips, so a dark level isn't one long fade; dips no change explains are "
+                         "listed as unexplained fades")
+    ev.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
+                    help="count a source's changes only when one of these writer PCs made them, e.g. "
+                         "room 0x5E3F,0x5CC0 (a byte that is scratch state for other code)")
+    ev.add_argument("--skip-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
+                    help="drop a source's changes made only by these writer PCs (known noise such as a menu "
+                         "routine), e.g. room 0x4E0B; sturdier than --only-pc when each level has its own door code")
+    ev.add_argument("--cluster", type=int, default=60, help="changes this many frames apart join one event")
+    ev.add_argument("--lag-min", type=int, default=5, help="shortest lag run that counts as a load")
+    ev.add_argument("--from", dest="start", type=int, default=0)
+    ev.add_argument("--to", dest="end", type=int, default=10 ** 9)
+    ev.add_argument("--limit", type=int, default=40)
+    common(ev)
+    ev.set_defaults(fn=cmd_events)
+
+    ca = sub.add_parser("catalog", help="rooms.json, doors.json and items.json from the labeling station's labels")
+    ca.add_argument("export")
+    ca.add_argument("--source", nargs=3, action="append", required=True, metavar=("NAME", "ADDRESS", "WIDTH"),
+                    help="the same sources the labels were made with")
+    ca.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"))
+    ca.add_argument("--skip-pc", nargs=2, action="append", metavar=("NAME", "PCS"))
+    ca.add_argument("--out", help="folder for the JSON files (default: the export folder)")
+    ca.set_defaults(fn=cmd_catalog)
 
     sh = sub.add_parser("shots", help="screenshots with mean brightness; --dark finds fades")
     sh.add_argument("export")
