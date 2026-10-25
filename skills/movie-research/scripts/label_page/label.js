@@ -9,7 +9,8 @@ const OPTIONS = {
          "warp / dance", "cutscene", "death", "other"],
   entry: ["", "standing", "climbing", "crawling", "falling", "swimming", "other"],
 };
-const FIELDS = ["arrival", "kind", "exit", "entry", "requires", "notes"];
+const FIELDS = ["arrival", "exit_door", "entry_door", "kind", "exit", "entry", "requires", "requires_back",
+                "leave_requires", "notes"];
 
 const token = new URLSearchParams(location.search).get("token") || "";
 let events = [];
@@ -96,16 +97,44 @@ function short(hex) {
   return hex.length > 16 ? `${hex.slice(0, 8)}…${hex.slice(-4)}` : hex;
 }
 
-/** Offer every "Arrived in" name used so far as a suggestion. Returns: nothing. */
-function refreshArrivalNames() {
-  const names = new Set(Object.values(labels.events).map((l) => (l.arrival || "").trim()).filter(Boolean));
-  const list = $("arrival-names");
+/** Fill a <datalist> with every value used so far in the given label fields. Returns: nothing. */
+function fillSuggestions(listId, fields) {
+  const names = new Set();
+  for (const l of Object.values(labels.events)) {
+    for (const f of fields) if ((l[f] || "").trim()) names.add(l[f].trim());
+  }
+  const list = $(listId);
   list.replaceChildren();
   for (const n of [...names].sort()) {
     const o = document.createElement("option");
     o.value = n;
     list.appendChild(o);
   }
+}
+
+/** Offer the place and door names used so far as suggestions. Returns: nothing. */
+function refreshArrivalNames() {
+  fillSuggestions("arrival-names", ["arrival"]);
+  fillSuggestions("door-names", ["exit_door", "entry_door"]);
+}
+
+/** Add an event at the typed frame (for transitions the list misses), save,
+ *  and reload the list from the server, which adds the screenshots around it.
+ *  Returns: a promise. */
+async function addEvent() {
+  const frame = parseInt($("add-frame").value, 10);
+  if (!Number.isInteger(frame) || frame < 0) {
+    $("status").textContent = "type a frame number first";
+    return;
+  }
+  const key = String(frame);
+  if (!labels.events[key]) labels.events[key] = { notes: "added by hand" };
+  clearTimeout(saveTimer);
+  await save();
+  await loadEvents();
+  const i = shown.findIndex((ev) => ev.frame === frame);
+  if (i >= 0) current = i;
+  render();
 }
 
 /** Short text for an event in the list: where it arrives, else place names. Returns: string. */
@@ -246,6 +275,7 @@ async function start() {
     });
   }
   $("fill-none").addEventListener("click", fillNone);
+  $("add-event").addEventListener("click", addEvent);
   $("unlabeled").addEventListener("change", render);
   $("guess-filter").addEventListener("change", () => { current = 0; render(); });
   document.addEventListener("keydown", (e) => {
@@ -255,19 +285,26 @@ async function start() {
     if (e.key === "j" && current > 0) { current -= 1; render(); }
   });
 
+  if (!(await loadEvents())) return;
+  fillSelect($("guess-filter"), [...new Set(events.map((e) => e.guess))].sort());
+  $("guess-filter").firstChild.textContent = "all methods";
+  $("status").textContent = `${events.length} events`;
+  render();
+}
+
+/** Fetch events and labels from the server. Returns: a promise of true when loaded. */
+async function loadEvents() {
   const r = await fetch(`/api/events?token=${encodeURIComponent(token)}`);
   if (!r.ok) {
     $("status").textContent = r.status === 403 ? "open the URL the server printed (it has the token)" : `error ${r.status}`;
-    return;
+    return false;
   }
   const data = await r.json();
   events = data.events;
   labels = Object.assign({ version: 1, places: {}, events: {}, items: [] }, data.labels);
   $("folder").textContent = data.folder;
-  fillSelect($("guess-filter"), [...new Set(events.map((e) => e.guess))].sort());
-  $("guess-filter").firstChild.textContent = "all methods";
-  $("status").textContent = `${events.length} events`;
-  render();
+  shown = [];
+  return true;
 }
 
 start();

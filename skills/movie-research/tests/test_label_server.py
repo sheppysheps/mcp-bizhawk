@@ -43,6 +43,14 @@ class Helpers(unittest.TestCase):
             data = label_server.load_labels(d, ["double jump", "key"])
             self.assertEqual(data["vocab"]["requires"], ["key", "double jump"])
 
+    def test_labels_without_a_computed_event_become_manual_events(self):
+        events = [{"frame": 100, "end": 100, "changes": [], "lag": 8, "guess": "load"}]
+        shots = [{"frame": 90, "file": "a.png"}, {"frame": 150, "file": "b.png"}]
+        labels = {"events": {"100": {"kind": "door"}, "120": {"notes": "added by hand"}, "x": {}}}
+        out = label_server.with_manual_events(events, labels, shots)
+        self.assertEqual([(e["frame"], e["guess"]) for e in out], [(100, "load"), (120, "manual")])
+        self.assertEqual((out[1]["shot_before"], out[1]["shot_after"]), ("a.png", "b.png"))
+
     def test_validate_labels(self):
         self.assertIsNone(label_server.validate_labels({"version": 1, "places": {}, "events": {}, "items": []}))
         self.assertIn("object", label_server.validate_labels([]))

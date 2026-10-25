@@ -25,6 +25,7 @@ part is fenced):
 """
 
 import argparse
+import bisect
 import hmac
 import json
 import os
@@ -156,6 +157,35 @@ def build_events(folder, sources, fades=None, cluster=60, lag_min=5, only_pcs=No
     return rows
 
 
+def with_manual_events(events, labels, shots):
+    """Add an event for every labeled frame the computed list doesn't have.
+
+    Transitions that change no watched variable and leave no screenshot dip
+    can only be added by hand ("Add event at frame"), and labels made on an
+    earlier list must not disappear. Each such frame becomes an event with
+    guess "manual", no changes, and the screenshots around it.
+    Returns: a new list, sorted by frame.
+    Requires: `shots` from movie_export.list_shots, sorted by frame.
+    """
+    have = {e["frame"] for e in events}
+    frames = [s["frame"] for s in shots]
+    out = list(events)
+    for key in (labels.get("events") or {}):
+        try:
+            frame = int(key)
+        except ValueError:
+            continue
+        if frame in have:
+            continue
+        i = bisect.bisect_left(frames, frame)
+        before = shots[i - 1]["file"] if i > 0 else None
+        j = bisect.bisect_right(frames, frame)
+        after = shots[j]["file"] if j < len(shots) else None
+        out.append({"frame": frame, "end": frame, "changes": [], "lag": 0, "guess": "manual",
+                    "shot_before": before, "shot_after": after})
+    return sorted(out, key=lambda e: e["frame"])
+
+
 # ── Server ────────────────────────────────────────────────────────────────
 
 def make_handler(folder, token, events, port_ref, requires=None):
@@ -166,6 +196,7 @@ def make_handler(folder, token, events, port_ref, requires=None):
     requirement checkboxes (see load_labels).
     Requires: the page files in PAGE_DIR.
     """
+    shots = movie_export.list_shots(folder)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # quiet: no per-request lines
@@ -207,8 +238,9 @@ def make_handler(folder, token, events, port_ref, requires=None):
                 with open(os.path.join(PAGE_DIR, name), "rb") as f:
                     self._send(200, f.read(), ctype)
             elif path == "/api/events":
-                self._send(200, {"folder": os.path.basename(folder), "events": events,
-                                 "labels": load_labels(folder, requires)})
+                labels = load_labels(folder, requires)
+                self._send(200, {"folder": os.path.basename(folder), "labels": labels,
+                                 "events": with_manual_events(events, labels, shots)})
             elif path.startswith("/shots/"):
                 file = shot_path(folder, path[len("/shots/"):])
                 if not file:
@@ -287,7 +319,9 @@ def main(argv=None):
     p.add_argument("export")
     p.add_argument("--source", nargs=3, action="append", required=True, metavar=("NAME", "ADDRESS", "WIDTH"),
                    help="a watched variable that changes at transitions, e.g. room 0xC3EF 3 (repeatable)")
-    p.add_argument("--fades", type=float, metavar="FRACTION", help="also list dark screenshots (see events --fades)")
+    p.add_argument("--fades", type=float, default=0.5, metavar="FRACTION",
+                   help="list screenshot dips as events too (see events --fades; default 0.5, 0 turns it off): "
+                        "transitions that change no watched variable only show up this way")
     p.add_argument("--only-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
                    help="count a source's changes only from these writer PCs (see events --only-pc)")
     p.add_argument("--skip-pc", nargs=2, action="append", metavar=("NAME", "PCS"),
@@ -302,7 +336,7 @@ def main(argv=None):
         return 1
     sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
     requires = [r.strip() for r in (args.requires or "").split(",") if r.strip()]
-    serve(args.export, sources, port=args.port, fades=args.fades, requires=requires,
+    serve(args.export, sources, port=args.port, fades=args.fades or None, requires=requires,
           only_pcs=movie_export.parse_only_pcs(args.only_pc), skip_pcs=movie_export.parse_only_pcs(args.skip_pc))
     return 0
 
