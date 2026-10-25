@@ -18,3 +18,7 @@ pre-push:
   commands:
     test:
       run: npm test
+    # Known vulnerabilities in the locked dependencies block the push until
+    # fixed, or recorded as accepted (advisory ID and reason) in the docs.
+    osv-scanner:
+      run: osv-scanner scan --lockfile package-lock.json
