@@ -64,6 +64,8 @@ Security: B5 and B6 only set registers and data bytes through the existing bridg
 ### C. Catalog conventions (shared with the game repos)
 
 - One findings format, written as JSON lines: `address`, `domain`, `bank`, `width`, `name`, `evidence` (capture, frames, writer PCs, method), `confidence`, `labels`.
+- From the game repos' review (2026-10-21): `bank` says which kind (ROM bank for code, WRAM bank for data); `confidence` is a small fixed set (`confirmed` / `likely` / `lead`); writer PCs carry their ROM bank wherever the core reports it, since a banked address is ambiguous across banks, and `evidence` says so when the core can't (BizHawk 1.x). Labels stay in the capture folder (game-specific); findings refer to them by capture and frame range.
+- First draft in use: `movie_export catalog` writes rooms, doors and items as format `draft-1`, to be aligned with this format once it's agreed.
 - Exporters to Ghidra label scripts and `BB:AAAA name` symbol files.
 - Agreed with dev-master and the game repos before building; `movie_export rank`/`events` and breakpoint results then emit it directly.
 
@@ -78,8 +80,14 @@ Planned randomizer features from the game side, and which items serve them:
 | Keysanity | Key counters and door/unlock flag bits | A3, A3b, A5 |
 | Logic presets (glitch levels) | A glitch catalog with frame ranges | A4, C |
 | Music and sound registers (research only) | The music-ID variable, sound-register writes | A7, A5 |
-| Door randomization | Door tables (one per transition type), exit methods, entry states | A1, A9, B4 |
-| Item randomization | Item locations (room + pickup), item identity and class | A9, A3 |
+| Door randomization | Door tables (one per transition type), exit methods, entry states; screen-edge scrolls (no fade, no pointer change) as an open third type | A1, A9, B4; B7 or B3 on the map data for how edges link |
+| Item randomization | Each progression item's flag bit, the code that sets it, the table that says which item a location gives, item locations (room + pickup) | B1, B2, A3, A3b, A9, then A1/B3 on the giver's table read |
+| Enemy randomization | Per-room object lists | B3, A1 |
+| Force day or night | The time-of-day variable, and a write at the right moment to test it | A5, B6 |
+| Start in a chosen town | The new-game setup routine and its spawn values | B6, B8, A6 |
+| Speed and quality-of-life patches | Frames saved per transition, before and after | B8, A6 |
+| Instant form or ability switch | The transform routine's inputs and results | B4, B7 |
+| Boss randomizer (feasibility) | Each boss's tiles and VRAM budget, its defeat flags | tile-graphics skill, B7, A3 |
 | Testing any patch | Scenario checks on 2.x | B8 |
 
 ## Suggested order
