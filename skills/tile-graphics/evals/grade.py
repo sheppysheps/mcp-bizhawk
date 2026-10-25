@@ -5,7 +5,8 @@ fresh from the hardware docs, so a bug in the skill can't grade itself as
 correct. Ground truth for screens is BizHawk's own screenshot.
 
 Usage: python grade.py <workspace>/iteration-N
-Inputs are read from <workspace>/inputs (see evals.json "notes").
+Inputs are read from $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs when that
+variable is set, else from <workspace>/inputs (see evals.json "notes").
 Writes grading_auto.json (programmatic checks) into each run directory.
 """
 
@@ -16,7 +17,20 @@ import struct
 import sys
 import zlib
 
-INPUTS = None  # set in main(): <workspace>/inputs, next to the iteration folder
+INPUTS = None  # set in main() by inputs_dir()
+
+
+def inputs_dir(iteration):
+    """Folder holding the eval inputs (game-derived dumps, never in the repo).
+
+    Returns $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs when the variable is
+    set, else the older <workspace>/inputs folder next to the iteration folder.
+    Depends on the CLAUDEWORK_ASSETS environment variable (asset store root).
+    """
+    assets = os.environ.get("CLAUDEWORK_ASSETS")
+    if assets:
+        return os.path.join(assets, "dumps", "tile-graphics-inputs")
+    return os.path.join(os.path.dirname(os.path.abspath(iteration)), "inputs")
 
 
 def read_png(path):
@@ -163,7 +177,7 @@ def grade_run(eval_name, run_dir):
 
 def main(iteration):
     global INPUTS
-    INPUTS = os.path.join(os.path.dirname(os.path.abspath(iteration)), "inputs")
+    INPUTS = inputs_dir(iteration)
     for meta in glob.glob(os.path.join(iteration, "eval-*", "eval_metadata.json")):
         name = json.load(open(meta))["eval_name"]
         for run_dir in glob.glob(os.path.join(os.path.dirname(meta), "*_skill", "run-*")):

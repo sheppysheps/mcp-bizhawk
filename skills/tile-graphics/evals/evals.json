@@ -3,13 +3,13 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "I paused Shantae (Game Boy Color) on the title screen and dumped VRAM (<workspace>/inputs/shantae_title/vram.bin, 16 KB), OAM (<workspace>/inputs/shantae_title/oam.bin) and the 12 bytes at $FF40 (<workspace>/inputs/shantae_title/io.bin), plus a screenshot (<workspace>/inputs/shantae_title/screenshot.png). Rip the on-screen sprites and both VRAM tile banks to PNGs, in the game's real colors where you can. Tell me what each file is.",
+      "prompt": "I paused Shantae (Game Boy Color) on the title screen and dumped VRAM ($CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/vram.bin, 16 KB), OAM ($CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/oam.bin) and the 12 bytes at $FF40 ($CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/io.bin), plus a screenshot ($CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/screenshot.png). Rip the on-screen sprites and both VRAM tile banks to PNGs, in the game's real colors where you can. Tell me what each file is.",
       "expected_output": "PNG tile sheets for VRAM bank 0 and bank 1, a sprite sheet in real (inferred) colors, palettes recovered from the screenshot; notes which outputs are grayscale vs real color; notes LCDC sprites-off at frame end.",
       "files": [
-        "<workspace>/inputs/shantae_title/vram.bin",
-        "<workspace>/inputs/shantae_title/oam.bin",
-        "<workspace>/inputs/shantae_title/io.bin",
-        "<workspace>/inputs/shantae_title/screenshot.png"
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/vram.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/oam.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/io.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/screenshot.png"
       ],
       "name": "rip-title-graphics",
       "assertions": [
@@ -24,13 +24,13 @@
     },
     {
       "id": 2,
-      "prompt": "Using these Shantae title-screen dumps (<workspace>/inputs/shantae_title/vram.bin, <workspace>/inputs/shantae_title/oam.bin, <workspace>/inputs/shantae_title/io.bin) and screenshot (<workspace>/inputs/shantae_title/screenshot.png), check whether decoding the video state actually reproduces the screenshot exactly. Give me the pixel match percentage, and if it isn't 100%, figure out why and fix it.",
+      "prompt": "Using these Shantae title-screen dumps ($CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/vram.bin, $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/oam.bin, $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/io.bin) and screenshot ($CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/screenshot.png), check whether decoding the video state actually reproduces the screenshot exactly. Give me the pixel match percentage, and if it isn't 100%, figure out why and fix it.",
       "expected_output": "Initial match ~94.56% because LCDC=0xE5 has sprites disabled at frame end while the Press Start plate is sprites; with LCDC overridden to 0xE7 the match is 100.00%.",
       "files": [
-        "<workspace>/inputs/shantae_title/vram.bin",
-        "<workspace>/inputs/shantae_title/oam.bin",
-        "<workspace>/inputs/shantae_title/io.bin",
-        "<workspace>/inputs/shantae_title/screenshot.png"
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/vram.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/oam.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/io.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_title/screenshot.png"
       ],
       "name": "verify-title-decode",
       "assertions": [
@@ -43,13 +43,13 @@
     },
     {
       "id": 3,
-      "prompt": "Get the Game Boy Color palettes from this capture and confirm your decode matches the screenshot: <workspace>/inputs/shantae_black/vram.bin, <workspace>/inputs/shantae_black/oam.bin, <workspace>/inputs/shantae_black/io.bin, <workspace>/inputs/shantae_black/screenshot.png. It's from Shantae, early after boot.",
+      "prompt": "Get the Game Boy Color palettes from this capture and confirm your decode matches the screenshot: $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_black/vram.bin, $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_black/oam.bin, $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_black/io.bin, $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_black/screenshot.png. It's from Shantae, early after boot.",
       "expected_output": "Notices the screenshot is a uniform black frame (a transition), so recovered palettes are meaningless (only black) and a 100% match proves nothing; recommends capturing a frame with visible content.",
       "files": [
-        "<workspace>/inputs/shantae_black/vram.bin",
-        "<workspace>/inputs/shantae_black/oam.bin",
-        "<workspace>/inputs/shantae_black/io.bin",
-        "<workspace>/inputs/shantae_black/screenshot.png"
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_black/vram.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_black/oam.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_black/io.bin",
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/shantae_black/screenshot.png"
       ],
       "name": "black-frame-trap",
       "assertions": [
@@ -64,10 +64,10 @@
     },
     {
       "id": 4,
-      "prompt": "<workspace>/inputs/nes_chr/chr.bin is 8 KB of NES pattern-table (CHR) data I pulled from a game. Render all of it as a tile sheet PNG, 16 tiles wide, and tell me the image dimensions.",
+      "prompt": "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/nes_chr/chr.bin is 8 KB of NES pattern-table (CHR) data I pulled from a game. Render all of it as a tile sheet PNG, 16 tiles wide, and tell me the image dimensions.",
       "expected_output": "A 128x256 PNG of 512 tiles decoded with NES planar 2bpp (8 bytes plane 0, then 8 bytes plane 1, bit 7 leftmost).",
       "files": [
-        "<workspace>/inputs/nes_chr/chr.bin"
+        "$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/nes_chr/chr.bin"
       ],
       "name": "nes-chr-sheet",
       "assertions": [
@@ -78,5 +78,5 @@
       ]
     }
   ],
-  "notes": "<workspace> is skills/tile-graphics-workspace/ (gitignored). The Shantae inputs are dumps of a commercial ROM, so they are not committed: recreate them with bizhawk_dump_memory (VRAM, OAM, System Bus $FF40 length 12) and bizhawk_screenshot at the frames described in research/06-tile-graphics-skill-eval.md. inputs/nes_chr/chr.bin is synthetic and generated as described there."
+  "notes": "Inputs live in the asset store at $CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/, outside every repo; run outputs go in skills/tile-graphics-workspace/ (gitignored). The Shantae inputs are dumps of a commercial ROM, so they are never committed: recreate them with bizhawk_dump_memory (VRAM, OAM, System Bus $FF40 length 12) and bizhawk_screenshot at the frames described in research/06-tile-graphics-skill-eval.md. nes_chr/chr.bin is synthetic and generated as described there."
 }

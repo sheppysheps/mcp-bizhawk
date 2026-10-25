@@ -168,6 +168,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Verified on BizHawk 2.11.1 (Gambatte, Game Boy Color): read, write and exec
   breakpoints fire; registers include `ROMX BANK` / `WRAM BANK`.
 
+### Changed
+
+- **Game data lives in the asset store.** The tile-graphics evals read their
+  inputs from `$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/` (`grade.py`
+  falls back to `<workspace>/inputs` when the variable is unset). Movie
+  captures moved from `E:/ClaudeWork/movies` to
+  `$CLAUDEWORK_ASSETS/movies`, and the bundled BizHawk reads firmware from
+  `$CLAUDEWORK_ASSETS/firmware`. `bizhawk-claude/` itself has not moved.
+
 ### Fixed
 
 - **Hub restart loop after a rebuild:** a session started before
