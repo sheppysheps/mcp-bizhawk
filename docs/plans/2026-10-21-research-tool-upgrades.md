@@ -63,6 +63,8 @@ Security: B5 and B6 only set registers and data bytes through the existing bridg
 
 ### C. Catalog conventions (shared with the game repos)
 
+**Settled (2026-10-25) in dashboard ADR 0003** (`E:/dev-master/docs/adr/0003-findings-and-labels-format.md`): `findings/1` (JSON Lines, one fact per address, with `confidence` and `supersedes`), `catalog/1` (rooms, doors, items; replaces `draft-1`, with stable place ids) and `labels.json` (raw input, stays in the capture folder). The fork owns the schemas, the `catalog/1` writer with a `draft-1` converter, stable place ids in the labeling station, and the Ghidra and `BB:AAAA` exporters. The ADR is the reference; the notes below are the history that led to it.
+
 - One findings format, written as JSON lines: `address`, `domain`, `bank`, `width`, `name`, `evidence` (capture, frames, writer PCs, method), `confidence`, `labels`.
 - From the game repos' review (2026-10-21): `bank` says which kind (ROM bank for code, WRAM bank for data); `confidence` is a small fixed set (`confirmed` / `likely` / `lead`); writer PCs carry their ROM bank wherever the core reports it, since a banked address is ambiguous across banks, and `evidence` says so when the core can't (BizHawk 1.x). Labels stay in the capture folder (game-specific); findings refer to them by capture and frame range.
 - First draft in use: `movie_export catalog` writes rooms, doors and items as format `draft-1`, to be aligned with this format once it's agreed.
