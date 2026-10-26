@@ -119,6 +119,13 @@ class Server(unittest.TestCase):
             self.assertEqual(json.load(f)["places"]["room:02"]["name"], "Town")
         data = json.loads(self.request("GET", "/api/events?token=tok")[1])
         self.assertEqual(data["labels"]["events"]["100"]["kind"], "door")
+        # Loading stores a stable id for every place name (dashboard ADR 0003).
+        body = json.dumps({"version": 1, "events": {"100": {"kind": "door", "arrival": "Old Town"}}})
+        self.request("POST", "/api/labels?token=tok", body)
+        data = json.loads(self.request("GET", "/api/events?token=tok")[1])
+        self.assertEqual(data["labels"]["place_ids"], {"Old Town": "old-town"})
+        with open(os.path.join(self.folder, "labels.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["place_ids"], {"Old Town": "old-town"})
 
 
 if __name__ == "__main__":

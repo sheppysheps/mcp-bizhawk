@@ -97,6 +97,34 @@ function fillNone() {
   $("status").textContent = n ? `"none" filled into ${n} fields; saving` : "nothing to fill";
 }
 
+/** Rename the current event's place in every event, keeping its stable id
+ *  (dashboard ADR 0003). Renaming onto an existing name merges the two
+ *  places under that name's id. Returns: nothing. */
+function renamePlace() {
+  const old = ($("arrival").value || "").trim();
+  if (!old) {
+    $("status").textContent = "this event has no place to rename";
+    return;
+  }
+  const name = (window.prompt(`Rename "${old}" in every event to:`, old) || "").trim();
+  if (!name || name === old) return;
+  labels.place_ids = labels.place_ids || {};
+  const merging = Object.prototype.hasOwnProperty.call(labels.place_ids, name);
+  if (merging && !window.confirm(`"${name}" already exists. Merge "${old}" into it?`)) return;
+  let n = 0;
+  for (const l of Object.values(labels.events)) {
+    if ((l.arrival || "").trim() === old) {
+      l.arrival = name;
+      n += 1;
+    }
+  }
+  if (!merging && labels.place_ids[old]) labels.place_ids[name] = labels.place_ids[old];
+  delete labels.place_ids[old];
+  queueSave();
+  render();
+  $("status").textContent = `renamed in ${n} events; saving`;
+}
+
 /** Add one quick-fill button per door preset under the exit and entry door
  *  fields; a click sets that field of the current event. Returns: nothing. */
 function renderDoorPresets(presets) {
@@ -262,6 +290,8 @@ function render() {
   }
   const l = labels.events[String(ev.frame)] || {};
   for (const f of FIELDS) $(f).value = l[f] || "";
+  const pid = (labels.place_ids || {})[(l.arrival || "").trim()];
+  $("place-id").textContent = pid ? `id: ${pid}` : "";
   renderRequireBoxes();
   refreshArrivalNames();
 }
@@ -304,6 +334,7 @@ async function start() {
   }
   $("fill-none").addEventListener("click", fillNone);
   $("add-event").addEventListener("click", addEvent);
+  $("rename-place").addEventListener("click", renamePlace);
   $("unlabeled").addEventListener("change", render);
   $("guess-filter").addEventListener("change", () => { current = 0; render(); });
   document.addEventListener("keydown", (e) => {

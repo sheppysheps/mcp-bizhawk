@@ -357,18 +357,83 @@ class Export(unittest.TestCase):
                              "200": {"kind": "edge scroll", "arrival": "DF2: Hall", "requires": "none"},
                              "250": {"kind": "not a transition", "arrival": "DF2: Hall"},
                              "300": {"kind": "edge scroll", "arrival": "DF3: Lake", "requires": "none"}}}
+        labels["events"]["200"].update(exit_door="east", entry_door="west", requires_back="")
         out = movie_export.catalog(rows, labels, capture="x")
+        self.assertEqual(out["rooms"]["format"], "catalog/1")
         places = {p["name"]: p for p in out["rooms"]["places"]}
         self.assertEqual(list(places), ["DF1: Lobby", "DF2: Hall", "DF3: Lake"])
+        self.assertEqual([p["id"] for p in places.values()], ["df1-lobby", "df2-hall", "df3-lake"])
         self.assertEqual(places["DF1: Lobby"]["region"], "DF")
         # room 10 arrived in two different places: a conflict, not an ID.
-        self.assertEqual(out["rooms"]["conflicts"], {"room:10": ["DF1: Lobby", "DF3: Lake"]})
+        self.assertEqual(out["rooms"]["conflicts"], {"room:10": ["df1-lobby", "df3-lake"]})
         self.assertEqual(places["DF3: Lake"]["conflicting_values"], ["room:10"])
-        self.assertEqual([(d["from"], d["to"], d["frames"]) for d in out["doors"]["doors"]],
-                         [("DF1: Lobby", "DF2: Hall", [200]), ("DF2: Hall", "DF3: Lake", [300])])
-        self.assertEqual(out["items"]["items"], [])
+        moves = out["doors"]["transitions"]
+        self.assertEqual([(d["id"], d["from"], d["to"], d["frames"]) for d in moves],
+                         [("df1-lobby.east--df2-hall.west", "df1-lobby", "df2-hall", [200]),
+                          ("df2-hall.x--df3-lake.x", "df2-hall", "df3-lake", [300])])
+        # "none" is an empty list, an empty field is unknown (None).
+        self.assertEqual((moves[0]["requires"], moves[0]["requires_back"]), ([], None))
+        self.assertEqual(moves[0]["evidence"][0]["writers"], [{"pc": "0x5E3F", "bank": None}])
+        self.assertIn("does not report the ROM bank", moves[0]["evidence"][0]["note"])
+        self.assertEqual(out["items"]["pickups"], [])
         self.assertEqual(movie_export.region_of("L2: Monkey Claw Cave"), "L")
         self.assertEqual(movie_export.region_of("Swamp"), "Swamp")
+        self.validate(out)
+
+    def validate(self, out):
+        """Check catalog output against schemas/catalog-1.schema.json when jsonschema is installed."""
+        try:
+            import jsonschema
+            from referencing import Registry, Resource
+        except ImportError:
+            return
+        root = os.path.join(HERE, "..", "..", "..", "schemas")
+        schemas = {}
+        for name in ("findings-1.schema.json", "catalog-1.schema.json"):
+            with open(os.path.join(root, name), encoding="utf-8") as f:
+                schemas[name] = json.load(f)
+        registry = Registry().with_resources((s["$id"], Resource.from_contents(s)) for s in schemas.values())
+        validator = jsonschema.Draft202012Validator(schemas["catalog-1.schema.json"], registry=registry)
+        for part in out.values():
+            validator.validate(part)
+
+    def test_place_ids_are_stable_and_requirements_are_lists(self):
+        labels = {"events": {"10": {"arrival": "Town"}, "20": {"arrival": "Town!"}, "30": {"arrival": "Cave"}}}
+        self.assertEqual(movie_export.assign_place_ids(labels), 3)
+        self.assertEqual(labels["place_ids"], {"Town": "town", "Town!": "town-2", "Cave": "cave"})
+        # A rename moves the id with the name; nothing new is assigned.
+        labels["place_ids"]["Big Town"] = labels["place_ids"].pop("Town")
+        labels["events"]["10"]["arrival"] = "Big Town"
+        self.assertEqual(movie_export.assign_place_ids(labels), 0)
+        self.assertEqual(labels["place_ids"]["Big Town"], "town")
+        self.assertEqual(movie_export.requirement_list("Monkey, key"), ["Monkey", "key"])
+        self.assertEqual(movie_export.requirement_list(" none "), [])
+        self.assertIsNone(movie_export.requirement_list(""))
+
+    def test_convert_draft1_catalog(self):
+        rooms = {"format": "draft-1", "capture": "c", "conflicts": {"room:10": ["A: One", "B: Two"]},
+                 "places": [{"name": "A: One", "region": "A", "visits": [5], "values": {"room:10": [5]}},
+                            {"name": "B: Two", "region": "B", "visits": [9], "values": {"room:10": [9]}}]}
+        doors = {"format": "draft-1", "doors": [{"from": "A: One", "to": "B: Two", "kind": "door", "exit_door": "east",
+                                                 "entry_door": "", "exit": "door (press up)", "entry": "standing",
+                                                 "requires": "key", "requires_back": "none", "leave_requires": "",
+                                                 "frames": [9], "evidence": [{"frame": 9, "changes": [
+                                                     {"source": "room", "pcs": ["0x4B47"]}], "notes": "n"}]}]}
+        out = movie_export.convert_draft1(rooms, doors, {"A: One": "start"})
+        self.assertEqual([p["id"] for p in out["rooms"]["places"]], ["start", "b-two"])
+        t = out["doors"]["transitions"][0]
+        self.assertEqual((t["id"], t["requires"], t["requires_back"], t["leave_requires"]),
+                         ("start.east--b-two.x", ["key"], [], None))
+        self.assertEqual(t["evidence"][0]["writers"], [{"pc": "0x4B47", "bank": None}])
+        self.validate(out)
+        d = self.folder("conv")
+        for name, data in (("rooms.json", rooms), ("doors.json", doors)):
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        code, text = run(["convert-catalog", d])
+        self.assertEqual(code, 0)
+        self.assertIn("catalog/1: 2 places (1 conflicting values), 1 transitions, 0 pickups", text)
+        self.assertEqual(run(["convert-catalog", d])[0], 1)  # already catalog/1 now
 
     def test_video_overlay_puts_each_input_on_its_own_frame(self):
         frames = [{"frame": f, "lag": f == 12, "input": "A" if f in (11, 12) else "."} for f in range(10, 14)]

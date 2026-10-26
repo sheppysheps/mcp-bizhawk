@@ -34,7 +34,10 @@
     <h2>Transition</h2>
     <div class="form">
       <label class="wide">Arrived in (the place in the after shot, whatever the values say)
-        <input id="arrival" list="arrival-names" placeholder="e.g. Dribble Fountain: lobby"></label>
+        <input id="arrival" list="arrival-names" placeholder="e.g. Dribble Fountain: lobby">
+        <span class="presets"><button type="button" id="rename-place"
+          title="Rename this place in every event; it keeps its id">Rename this place everywhere</button>
+          <span id="place-id" class="hint"></span></span></label>
       <datalist id="arrival-names"></datalist>
       <label>Exit door (at the origin) <input id="exit_door" list="door-names" placeholder="e.g. east door, top ladder">
         <span class="presets" id="exit_door-presets"></span></label>
