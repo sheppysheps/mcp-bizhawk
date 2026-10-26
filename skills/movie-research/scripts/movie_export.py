@@ -594,7 +594,12 @@ def cmd_video(args):
             movie_frames = int(e["meta"].get("movie_length") or e["frames"][-1]["frame"])
             seconds = wav_seconds(audio)
             offset = audio_offset_frames(seconds, movie_frames, args.fps)
-            print(f"audio: {seconds:.2f} s for a {movie_frames}-frame movie, so it starts at frame {offset}")
+            if seconds * args.fps > movie_frames + 1:
+                print(f"audio: {seconds:.2f} s is longer than the {movie_frames}-frame movie "
+                      f"({movie_frames / args.fps:.2f} s): the dump ran past the end, so 'auto' can't tell when "
+                      "it started; assuming frame 0 (set --audio-offset if the sound is out of sync)")
+            else:
+                print(f"audio: {seconds:.2f} s for a {movie_frames}-frame movie, so it starts at frame {offset}")
         else:
             offset = int(args.audio_offset)
     cmd = video_command(args.export, start, end, args.fps, args.scale, bar, args.font, ass_name, out_path,
