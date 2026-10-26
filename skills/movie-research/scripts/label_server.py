@@ -44,7 +44,7 @@ PAGE_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
               "/label.js": ("label.js", "text/javascript; charset=utf-8"),
               "/label.css": ("label.css", "text/css; charset=utf-8")}
 MAX_LABELS_BYTES = 4 * 1024 * 1024
-LABEL_KEYS = {"version", "places", "events", "items", "vocab", "place_ids"}
+LABEL_KEYS = {"version", "places", "events", "items", "vocab", "place_ids", "pickups"}
 HEADERS = {
     # Scripts and styles only from this server, no inline code, no framing.
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
@@ -93,7 +93,8 @@ def validate_labels(data):
     extra = set(data) - LABEL_KEYS
     if extra:
         return f"unexpected keys: {', '.join(sorted(extra))}"
-    for key, kind in (("places", dict), ("events", dict), ("vocab", dict), ("place_ids", dict), ("items", list)):
+    for key, kind in (("places", dict), ("events", dict), ("vocab", dict), ("place_ids", dict), ("pickups", dict),
+                      ("items", list)):
         if key in data and not isinstance(data[key], kind):
             return f"{key} must be a {'list' if kind is list else 'JSON object'}"
     return None
@@ -186,15 +187,33 @@ def with_manual_events(events, labels, shots):
     return sorted(out, key=lambda e: e["frame"])
 
 
+def with_places_and_shots(candidates, labels, shots):
+    """Pickup candidates for the page: each with the place the player was in
+    (from the labeled transitions) and the screenshots around it.
+    Returns: a new list of dicts. Requires: shots sorted by frame."""
+    timeline = movie_export.place_timeline(labels)
+    frames = [s["frame"] for s in shots]
+    out = []
+    for c in candidates:
+        after = c["after"] if c["after"] is not None else c["frame"]
+        i = bisect.bisect_right(frames, after)
+        j = bisect.bisect_left(frames, c["frame"])
+        out.append(dict(c, place=movie_export.place_at(timeline, after),
+                        shot_before=shots[i - 1]["file"] if i > 0 else None,
+                        shot_after=shots[j]["file"] if j < len(shots) else None))
+    return out
+
+
 # ── Server ────────────────────────────────────────────────────────────────
 
-def make_handler(folder, token, events, port_ref, requires=None, door_presets=None):
+def make_handler(folder, token, events, port_ref, requires=None, door_presets=None, pickups=None):
     """Build the request handler class bound to one export folder and token.
 
     Returns: a BaseHTTPRequestHandler subclass. `port_ref` is a one-item list
     holding the bound port (known only after binding); `requires` seeds the
     requirement checkboxes (see load_labels); `door_presets` are the page's
-    quick-fill values for the door fields.
+    quick-fill values for the door fields; `pickups` are pickup candidates
+    (movie_export.pickup_candidates) for the page's items mode.
     Requires: the page files in PAGE_DIR.
     """
     shots = movie_export.list_shots(folder)
@@ -246,7 +265,8 @@ def make_handler(folder, token, events, port_ref, requires=None, door_presets=No
                     save_labels(folder, labels)
                 self._send(200, {"folder": os.path.basename(folder), "labels": labels,
                                  "events": with_manual_events(events, labels, shots),
-                                 "door_presets": list(door_presets or [])})
+                                 "door_presets": list(door_presets or []),
+                                 "pickups": with_places_and_shots(pickups or [], labels, shots)})
             elif path.startswith("/shots/"):
                 file = shot_path(folder, path[len("/shots/"):])
                 if not file:
@@ -298,7 +318,7 @@ def make_handler(folder, token, events, port_ref, requires=None, door_presets=No
 
 
 def serve(folder, sources, port=8770, fades=None, token=None, requires=None, only_pcs=None, skip_pcs=None,
-          door_presets=None):
+          door_presets=None, pickups=None):
     """Start the server (blocking until Ctrl+C) on 127.0.0.1 only.
 
     Returns: None. Prints the URL with the session token.
@@ -308,7 +328,7 @@ def serve(folder, sources, port=8770, fades=None, token=None, requires=None, onl
     events = build_events(folder, sources, fades=fades, only_pcs=only_pcs, skip_pcs=skip_pcs)
     port_ref = [port]
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(folder, token, events, port_ref, requires,
-                                                                         door_presets))
+                                                                         door_presets, pickups))
     port_ref[0] = server.server_address[1]
     print(f"{len(events)} events from {folder}")
     print(f"open http://127.0.0.1:{port_ref[0]}/?token={token}")
@@ -341,15 +361,34 @@ def main(argv=None):
     p.add_argument("--door-presets", metavar="LIST", default="only-exit (west),only-exit (east)",
                    help="comma-separated quick-fill values shown as buttons under the door fields "
                         "(default: \"only-exit (west),only-exit (east)\")")
+    p.add_argument("--pickups-from", metavar="EXPORT",
+                   help="a capture of the same movie with periodic snapshots (snapshot_every) to find pickup "
+                        "candidates in; turns on the page's items mode")
+    p.add_argument("--pickups-range", nargs=3, metavar=("DOMAIN", "START", "LENGTH"),
+                   help="the progress block to search, e.g. WRAM 0x0A70 0xDE (the live save file, see locate)")
+    p.add_argument("--pickups-start", type=int, default=0, help="ignore snapshots before this frame "
+                                                                  "(RAM being initialised at power-on)")
     args = p.parse_args(argv)
     if not os.path.exists(os.path.join(args.export, "frames.tsv")):
         print(f"{args.export}: not a movie_recorder export folder")
         return 1
+    pickups = None
+    if args.pickups_from:
+        if not args.pickups_range:
+            print("--pickups-from needs --pickups-range DOMAIN START LENGTH")
+            return 1
+        dom, lo, length = args.pickups_range
+        pickups = movie_export.pickup_candidates(args.pickups_from, dom, int(lo, 0), int(length, 0),
+                                                 args.pickups_start)
+        capture = os.path.basename(os.path.normpath(args.pickups_from))
+        for c in pickups:
+            c["capture"] = capture
+        print(f"{len(pickups)} pickup candidates from {args.pickups_from}")
     sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
     requires = [r.strip() for r in (args.requires or "").split(",") if r.strip()]
     serve(args.export, sources, port=args.port, fades=args.fades or None, requires=requires,
           only_pcs=movie_export.parse_only_pcs(args.only_pc), skip_pcs=movie_export.parse_only_pcs(args.skip_pc),
-          door_presets=[d.strip() for d in args.door_presets.split(",") if d.strip()])
+          door_presets=[d.strip() for d in args.door_presets.split(",") if d.strip()], pickups=pickups)
     return 0
 
 

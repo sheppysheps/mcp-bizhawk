@@ -747,7 +747,75 @@ def catalog(rows, labels, capture="", bank_note="BizHawk 1.x does not report the
         p["conflicting_values"] = sorted(v for v in p["observed"] if v in conflicts)
     return {"rooms": dict(head, places=sorted(places.values(), key=lambda p: p["visits"][0]), conflicts=conflicts),
             "doors": dict(head, transitions=sorted(doors.values(), key=lambda d: d["frames"][0])),
-            "items": dict(head, pickups=[])}
+            "items": dict(head, pickups=catalog_pickups(labels, ids))}
+
+
+def catalog_pickups(labels, ids):
+    """Pickups for items.json from the labeling station's item labels.
+
+    labels["pickups"] maps a candidate key (pickup_candidates) to what the
+    person said: item name and class, or "ignore" for bits that aren't items.
+    The place is where the player was when the bit was first seen set.
+    Returns: list of catalog/1 pickups, by frame. Requires: place ids assigned.
+    """
+    timeline = place_timeline(labels)
+    out = []
+    for key, p in (labels.get("pickups") or {}).items():
+        item = (p.get("item") or "").strip()
+        if p.get("ignore") or not item:
+            continue
+        frames = [p.get("after") or p["frame"], p["frame"]]
+        place = place_at(timeline, frames[0]) or place_at(timeline, frames[1])
+        if place is None or place not in ids:
+            continue
+        out.append({"place": ids[place], "item": item, "class": p.get("class") or "minor", "frames": frames,
+                    "flag": {"domain": p.get("domain"), "address": p.get("address"), "bit": p.get("bit")},
+                    "evidence": [{"capture": p.get("capture") or "", "frames": frames, "writers": [],
+                                  "method": "periodic snapshots: a bit set once and never cleared, named by a person",
+                                  "note": "; ".join(x for x in (f"{p.get('domain')} {p.get('address')} bit {p.get('bit')}",
+                                                               (p.get("notes") or "").strip()) if x)}]})
+    return sorted(out, key=lambda x: x["frames"][1])
+
+
+def place_timeline(labels):
+    """Where the player is over time, from the labeled transitions.
+
+    Returns: sorted list of (frame, place name), one per labeled transition
+    with an "Arrived in" name (not-a-transition and menu events excluded).
+    Requires: labels as saved by label_server.
+    """
+    out = []
+    for key, lab in (labels.get("events") or {}).items():
+        name = (lab.get("arrival") or "").strip()
+        if key.isdigit() and name and (lab.get("kind") or "").strip() not in NOT_TRANSITIONS:
+            out.append((int(key), name))
+    return sorted(out)
+
+
+def place_at(timeline, frame):
+    """The place the player was in at `frame`: the last arrival at or before it.
+    Returns: place name, or None before the first arrival. Requires: place_timeline()."""
+    i = bisect.bisect_right([f for f, _ in timeline], frame)
+    return timeline[i - 1][1] if i else None
+
+
+def pickup_candidates(folder, domain, lo, length, start=0):
+    """Bits that turn on once and stay on in a block of memory, as pickup candidates.
+
+    For a game's progress block (e.g. the live copy of the save file, see
+    locate), each such bit is usually one collected item, opened door, beaten
+    boss or story event; a person then names it. Each candidate has a stable
+    key ("DOMAIN:0xADDR.bit"), the snapshot frame it was first seen set and
+    the snapshot frame before (the pickup happened in between).
+    Returns: list of dicts {"key", "domain", "address", "bit", "after", "frame"}, by frame.
+    Requires: periodic snapshots of `domain` in `folder` (snapshot_every).
+    """
+    e = load(folder)
+    snaps = [s for s in e["snapshots"] if s["domain"] == domain and s["frame"] >= start]
+    rows = [r for r in snapshot_bits(folder, snaps, lo, length)
+            if r["sets"] == 1 and r["clears"] == 0 and r["initial"] == 0]
+    return [{"key": f"{domain}:{r['address']}.{r['bit']}", "domain": domain, "address": r["address"],
+             "bit": r["bit"], "after": r["first_set_after"], "frame": r["first_set"]} for r in rows]
 
 
 def convert_draft1(rooms, doors, place_ids=None):

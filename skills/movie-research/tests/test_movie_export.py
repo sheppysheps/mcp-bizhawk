@@ -397,6 +397,27 @@ class Export(unittest.TestCase):
         for part in out.values():
             validator.validate(part)
 
+    def test_pickups_from_snapshots_land_in_items_json(self):
+        # A progress block of 2 bytes: offset 1 bit 3 turns on between frames
+        # 200 and 300 (a pickup); offset 0 toggles (a state, not a pickup).
+        snaps = {(100, "WRAM"): bytes([0, 0x00]), (200, "WRAM"): bytes([1, 0x00]),
+                 (300, "WRAM"): bytes([0, 0x08]), (400, "WRAM"): bytes([1, 0x08])}
+        d = write_export(self.folder("p"), snapshots=snaps, frames=400)
+        cands = movie_export.pickup_candidates(d, "WRAM", 0, 2, start=100)
+        self.assertEqual([(c["key"], c["after"], c["frame"]) for c in cands], [("WRAM:0x0001.3", 200, 300)])
+        labels = {"events": {"50": {"kind": "door", "arrival": "Town"}, "250": {"kind": "door", "arrival": "Cave"}},
+                  "pickups": {"WRAM:0x0001.3": dict(cands[0], item="Heart Holder", **{"class": "major"},
+                                                    capture="p9"),
+                              "WRAM:0x0000.7": {"frame": 90, "after": 80, "ignore": True}}}
+        out = movie_export.catalog([], labels, capture="p11")
+        # The bit was first seen set after frame 200: the player was in Town then.
+        self.assertEqual([(x["place"], x["item"], x["class"], x["frames"]) for x in out["items"]["pickups"]],
+                         [("town", "Heart Holder", "major", [200, 300])])
+        self.assertEqual(out["items"]["pickups"][0]["flag"], {"domain": "WRAM", "address": "0x0001", "bit": 3})
+        timeline = movie_export.place_timeline(labels)
+        self.assertEqual((movie_export.place_at(timeline, 10), movie_export.place_at(timeline, 260)), (None, "Cave"))
+        self.validate(out)
+
     def test_place_ids_are_stable_and_requirements_are_lists(self):
         labels = {"events": {"10": {"arrival": "Town"}, "20": {"arrival": "Town!"}, "30": {"arrival": "Cave"}}}
         self.assertEqual(movie_export.assign_place_ids(labels), 3)

@@ -11,6 +11,10 @@
 <header>
   <h1>Labeling Station</h1>
   <span id="folder"></span>
+  <select id="mode" aria-label="What to label">
+    <option value="transitions">Transitions</option>
+    <option value="items">Items</option>
+  </select>
   <label><input type="checkbox" id="unlabeled"> unlabeled only</label>
   <select id="guess-filter" aria-label="Filter by guessed method">
     <option value="">all methods</option>
@@ -28,6 +32,21 @@
       <figure><img id="shot-before" alt="Screenshot before"><figcaption id="cap-before">before</figcaption></figure>
       <figure><img id="shot-after" alt="Screenshot after"><figcaption id="cap-after">after</figcaption></figure>
     </div>
+    <div id="item-part" hidden>
+      <h2>Pickup</h2>
+      <p class="hint" id="item-flag"></p>
+      <div class="form">
+        <label class="wide">Item (what was picked up, bought or given)
+          <input id="item" list="item-names" placeholder="e.g. Warp Squid, Heart Holder, key"></label>
+        <datalist id="item-names"></datalist>
+        <label>Class <select id="item_class">
+          <option value="">(not set)</option><option value="major">major</option><option value="key">key</option>
+          <option value="minor">minor</option><option value="consumable">consumable</option></select></label>
+        <label class="check"><input type="checkbox" id="item_ignore"> not an item (story flag, door, obstacle...)</label>
+        <label class="wide">Notes <textarea id="item_notes" rows="3"></textarea></label>
+      </div>
+    </div>
+    <div id="transition-part">
     <h2>Places</h2>
     <p class="hint">Name each new value once; later visits to the same value show the name.</p>
     <div id="changes"></div>
@@ -52,6 +71,7 @@
       <label>Requires the other way (arrival → origin) <input id="requires_back" placeholder="empty if unknown; none, or comma-separated"></label>
       <label>To leave the arrival room <input id="leave_requires" placeholder="e.g. Monkey to climb out if you fall"></label>
       <label class="wide">Notes <textarea id="notes" rows="3"></textarea></label>
+    </div>
     </div>
     <p class="hint">Keys: <kbd>j</kbd> previous, <kbd>k</kbd> next (outside text fields). Changes save automatically.</p>
   </section>

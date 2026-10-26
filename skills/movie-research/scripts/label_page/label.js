@@ -19,6 +19,27 @@ let shown = [];
 let current = 0;
 let saveTimer = null;
 let doorPresets = [];
+let mode = "transitions";
+let pickups = [];
+const ITEM_FIELDS = { item: "item", item_class: "class", item_notes: "notes" };
+
+/** The labels of one pickup candidate (created on first use, with the
+ *  candidate's flag and frames so the catalog can use it on its own).
+ *  Returns: object. */
+function pickupLabels(p) {
+  labels.pickups = labels.pickups || {};
+  if (!labels.pickups[p.key]) {
+    labels.pickups[p.key] = { domain: p.domain, address: p.address, bit: p.bit, after: p.after,
+                              frame: p.frame, capture: p.capture || "" };
+  }
+  return labels.pickups[p.key];
+}
+
+/** Is a pickup candidate done (named, or marked as not an item)? Returns: boolean. */
+function pickupDone(p) {
+  const l = (labels.pickups || {})[p.key];
+  return Boolean(l && (l.ignore || (l.item || "").trim()));
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -204,12 +225,23 @@ function summary(ev) {
   }).join(", ");
 }
 
+/** Short text for a pickup in the list: its name, or where it happened. Returns: string. */
+function pickupSummary(p) {
+  const l = (labels.pickups || {})[p.key] || {};
+  if (l.ignore) return "not an item";
+  if ((l.item || "").trim()) return `${l.item}${l.class ? ` (${l.class})` : ""}`;
+  return p.place ? `in ${p.place}` : "";
+}
+
 /** Apply the filters and redraw the list. Returns: nothing. */
 function refreshList() {
   const onlyUnlabeled = $("unlabeled").checked;
   const guess = $("guess-filter").value;
   const keep = shown.length ? shown[current] : null;
-  shown = events.filter((ev) => (!onlyUnlabeled || !isLabeled(ev)) && (!guess || ev.guess === guess));
+  const items = mode === "items";
+  const done = items ? pickupDone : isLabeled;
+  shown = (items ? pickups : events).filter((ev) => (!onlyUnlabeled || !done(ev)) &&
+                                                    (items || !guess || ev.guess === guess));
   const at = keep ? shown.indexOf(keep) : -1;
   current = at >= 0 ? at : Math.min(current, Math.max(0, shown.length - 1));
   const list = $("list");
@@ -217,16 +249,16 @@ function refreshList() {
   shown.forEach((ev, i) => {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = (i === current ? "current " : "") + (isLabeled(ev) ? "done" : "");
+    b.className = (i === current ? "current " : "") + (done(ev) ? "done" : "");
     const f = document.createElement("span");
     f.className = "frame";
     f.textContent = `f${ev.frame}`;
     const g = document.createElement("span");
     g.className = "guess";
-    g.textContent = ev.guess;
+    g.textContent = items ? `${ev.address} bit ${ev.bit}` : ev.guess;
     const s = document.createElement("span");
     s.className = "sum";
-    s.textContent = summary(ev);
+    s.textContent = items ? pickupSummary(ev) : summary(ev);
     b.append(f, g, s);
     b.addEventListener("click", () => { current = i; render(); });
     list.appendChild(b);
@@ -252,6 +284,12 @@ function render() {
   const ev = shown[current];
   $("detail").hidden = !ev;
   if (!ev) return;
+  $("item-part").hidden = mode !== "items";
+  $("transition-part").hidden = mode === "items";
+  if (mode === "items") {
+    renderPickup(ev);
+    return;
+  }
   $("position").textContent =
     `Event ${current + 1} of ${shown.length} · frame ${ev.frame}` + (ev.end !== ev.frame ? `-${ev.end}` : "") +
     ` · guessed: ${ev.guess}` + (ev.lag ? ` (lag burst ${ev.lag})` : "");
@@ -296,6 +334,27 @@ function render() {
   refreshArrivalNames();
 }
 
+/** Draw a pickup candidate: where and when the bit was set, the
+ *  screenshots around it, and its item fields. Returns: nothing. */
+function renderPickup(p) {
+  $("position").textContent = `Pickup ${current + 1} of ${shown.length} · between frames ${p.after} and ${p.frame}` +
+    (p.place ? ` · in ${p.place}` : "");
+  setShot($("shot-before"), $("cap-before"), p.shot_before, "before");
+  setShot($("shot-after"), $("cap-after"), p.shot_after, "after");
+  $("item-flag").textContent = `${p.domain} ${p.address} bit ${p.bit} turned on here and stayed on.`;
+  const l = (labels.pickups || {})[p.key] || {};
+  for (const [id, field] of Object.entries(ITEM_FIELDS)) $(id).value = l[field] || "";
+  $("item_ignore").checked = Boolean(l.ignore);
+  fillSuggestions("item-names", []);
+  const names = new Set(Object.values(labels.pickups || {}).map((x) => (x.item || "").trim()).filter(Boolean));
+  const list = $("item-names");
+  for (const n of [...names].sort()) {
+    const o = document.createElement("option");
+    o.value = n;
+    list.appendChild(o);
+  }
+}
+
 /** Save the labels soon (debounced). Returns: nothing. */
 function queueSave() {
   $("status").textContent = "unsaved";
@@ -332,6 +391,29 @@ async function start() {
       if (f === "requires") renderRequireBoxes();
     });
   }
+  for (const [id, field] of Object.entries(ITEM_FIELDS)) {
+    $(id).addEventListener("input", () => {
+      const p = shown[current];
+      if (!p || mode !== "items") return;
+      pickupLabels(p)[field] = $(id).value;
+      queueSave();
+      refreshList();
+    });
+  }
+  $("item_ignore").addEventListener("change", () => {
+    const p = shown[current];
+    if (!p || mode !== "items") return;
+    pickupLabels(p).ignore = $("item_ignore").checked;
+    queueSave();
+    refreshList();
+  });
+  $("mode").addEventListener("change", () => {
+    mode = $("mode").value;
+    shown = [];
+    current = 0;
+    $("guess-filter").hidden = mode === "items";
+    render();
+  });
   $("fill-none").addEventListener("click", fillNone);
   $("add-event").addEventListener("click", addEvent);
   $("rename-place").addEventListener("click", renamePlace);
@@ -362,6 +444,8 @@ async function loadEvents() {
   const data = await r.json();
   events = data.events;
   doorPresets = data.door_presets || [];
+  pickups = data.pickups || [];
+  $("mode").hidden = !pickups.length;
   labels = Object.assign({ version: 1, places: {}, events: {}, items: [] }, data.labels);
   $("folder").textContent = data.folder;
   shown = [];

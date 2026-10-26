@@ -51,6 +51,16 @@ class Helpers(unittest.TestCase):
         self.assertEqual([(e["frame"], e["guess"]) for e in out], [(100, "load"), (120, "manual")])
         self.assertEqual((out[1]["shot_before"], out[1]["shot_after"]), ("a.png", "b.png"))
 
+    def test_pickup_candidates_get_place_and_shots(self):
+        cands = [{"key": "WRAM:0x0001.3", "domain": "WRAM", "address": "0x0001", "bit": 3, "after": 200,
+                  "frame": 300}]
+        labels = {"events": {"50": {"kind": "door", "arrival": "Town"}}}
+        shots = [{"frame": 175, "file": "a.png"}, {"frame": 225, "file": "b.png"}, {"frame": 300, "file": "c.png"}]
+        out = label_server.with_places_and_shots(cands, labels, shots)
+        self.assertEqual((out[0]["place"], out[0]["shot_before"], out[0]["shot_after"]), ("Town", "a.png", "c.png"))
+        self.assertIsNone(label_server.validate_labels({"pickups": {"k": {"item": "x"}}}))
+        self.assertIn("pickups", label_server.validate_labels({"pickups": []}))
+
     def test_validate_labels(self):
         self.assertIsNone(label_server.validate_labels({"version": 1, "places": {}, "events": {}, "items": []}))
         self.assertIn("object", label_server.validate_labels([]))
