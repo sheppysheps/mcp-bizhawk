@@ -396,6 +396,21 @@ class Export(unittest.TestCase):
         self.assertIn("-start_number 1 -i shot_f%07d_every.png -frames:v 3", text)
         self.assertIn("eif\\:n+1\\:d", text)
         self.assertTrue(os.path.exists(os.path.join(d, "video_overlay.ass")))
+        # Sound: a WAV 2 frames short of a 3-frame movie started at frame 2
+        # (auto offset), so it is delayed by 1 frame relative to frame 1.
+        import wave
+        wav = os.path.join(d, "s.wav")
+        with wave.open(wav, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(600)
+            w.writeframes(b"\0\0" * 10)  # 1/60 s = 1 frame at 60 fps
+        self.assertEqual(movie_export.audio_offset_frames(movie_export.wav_seconds(wav), 3, 60.0), 2)
+        cmd = movie_export.video_command(d, 1, 3, 60.0, 4, 36, "C:/f.ttf", "o.ass", "x.mp4", audio=wav,
+                                         audio_offset=2)
+        self.assertEqual(cmd[cmd.index("-itsoffset") + 1], "0.016667")
+        self.assertIn("apad", cmd)
+        cmd = movie_export.video_command(d, 5, 9, 60.0, 4, 36, "C:/f.ttf", "o.ass", "x.mp4", audio=wav,
+                                         audio_offset=2)
+        self.assertEqual(cmd[cmd.index("-ss") + 1], "0.050000")
 
     def test_execs_without_execs_file(self):
         f = write_export(self.folder("a"))

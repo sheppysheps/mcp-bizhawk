@@ -510,14 +510,35 @@ def input_overlay_ass(frames, start, end, fps, width, height, bar, font_size):
     return "".join(out)
 
 
-def video_command(folder, start, end, fps, scale, bar, font, ass_name, out_path, ffmpeg="ffmpeg"):
+def wav_seconds(path):
+    """Length of a WAV file in seconds, from its header. Returns: float.
+    Raises wave.Error for files that aren't PCM WAV. Requires: read access."""
+    import wave  # noqa: PLC0415
+    with wave.open(path, "rb") as w:
+        return w.getnframes() / float(w.getframerate())
+
+
+def audio_offset_frames(wav_len, movie_frames, fps):
+    """How many frames late a sound recording started, when it ran to the movie's end.
+
+    A dump started a few frames into playback is that many frames short.
+    Returns: int frames (0 when the WAV is as long as the movie or longer).
+    Requires: nothing.
+    """
+    return max(0, int(round(movie_frames - wav_len * fps)))
+
+
+def video_command(folder, start, end, fps, scale, bar, font, ass_name, out_path, ffmpeg="ffmpeg",
+                  audio=None, audio_offset=0):
     """The ffmpeg command that turns consecutive per-frame screenshots into an MP4.
 
     Input: shot_f<frame>_every.png from `start` to `end` (a pass with
     snapshot_every = 1). The picture is scaled `scale` times with nearest-
     neighbour pixels, a black bar of `bar` pixels is added under it, the
     movie frame number is drawn in the bar's left half, and the input overlay
-    (`ass_name`, relative to `folder`) on the right.
+    (`ass_name`, relative to `folder`) on the right. `audio` (a WAV whose
+    sample 0 is movie frame `audio_offset`) is aligned to video frame 0 (movie
+    frame `start`), encoded as AAC, padded with silence and cut to the video.
     Returns: argument list (no shell), to run with cwd=folder.
     Requires: ffmpeg with the drawtext and ass filters.
     """
@@ -526,9 +547,21 @@ def video_command(folder, start, end, fps, scale, bar, font, ass_name, out_path,
           f"drawtext=fontfile='{font_arg}':text='frame %{{eif\\:n+{start}\\:d}}':fontcolor=white:"
           f"fontsize={bar // 2}:x=8:y=h-{bar}+({bar}-text_h)/2,"
           f"ass={ass_name}")
-    return [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-framerate", f"{fps:.6f}",
-            "-start_number", str(start), "-i", "shot_f%07d_every.png", "-frames:v", str(end - start + 1),
-            "-vf", vf, "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p", out_path]
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-framerate", f"{fps:.6f}",
+           "-start_number", str(start), "-i", "shot_f%07d_every.png"]
+    audio_args = []
+    if audio:
+        # Video frame 0 is movie frame `start` (shown at t = 0); the WAV starts
+        # at movie frame `audio_offset`. A positive shift delays the audio,
+        # a negative one skips its beginning.
+        shift = (audio_offset - start) / fps
+        if shift >= 0:
+            cmd += ["-itsoffset", f"{shift:.6f}", "-i", audio]
+        else:
+            cmd += ["-ss", f"{-shift:.6f}", "-i", audio]
+        audio_args = ["-map", "0:v", "-map", "1:a", "-af", "apad", "-c:a", "aac", "-b:a", "160k", "-shortest"]
+    return cmd + ["-frames:v", str(end - start + 1), "-vf", vf] + audio_args + [
+        "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p", out_path]
 
 
 def cmd_video(args):
@@ -554,8 +587,18 @@ def cmd_video(args):
     with open(os.path.join(args.export, ass_name), "w", encoding="utf-8", newline="\n") as f:
         f.write(input_overlay_ass(e["frames"], start, end, args.fps, width, height, bar, bar // 2))
     out_path = os.path.abspath(args.out)
+    audio, offset = None, 0
+    if args.audio:
+        audio = os.path.abspath(args.audio)
+        if args.audio_offset == "auto":
+            movie_frames = int(e["meta"].get("movie_length") or e["frames"][-1]["frame"])
+            seconds = wav_seconds(audio)
+            offset = audio_offset_frames(seconds, movie_frames, args.fps)
+            print(f"audio: {seconds:.2f} s for a {movie_frames}-frame movie, so it starts at frame {offset}")
+        else:
+            offset = int(args.audio_offset)
     cmd = video_command(args.export, start, end, args.fps, args.scale, bar, args.font, ass_name, out_path,
-                        args.ffmpeg)
+                        args.ffmpeg, audio=audio, audio_offset=offset)
     if args.dry_run:
         print(" ".join(cmd))
         return 0
@@ -1231,6 +1274,10 @@ def main(argv=None):
     vd.add_argument("--scale", type=int, default=4, help="pixel scale (nearest neighbour), default 4")
     vd.add_argument("--font", default=DEFAULT_FONT, help="monospace font file for the frame counter")
     vd.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg program (default: from PATH)")
+    vd.add_argument("--audio", help="a WAV dump of the same movie (e.g. BizHawk's WAV writer) to add as sound")
+    vd.add_argument("--audio-offset", default="auto",
+                    help="movie frame the WAV starts at; 'auto' (default) assumes it ran to the movie's end and "
+                         "works it out from its length")
     vd.add_argument("--dry-run", action="store_true", help="print the ffmpeg command instead of running it")
     vd.set_defaults(fn=cmd_video)
 
