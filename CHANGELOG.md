@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Movie videos with an overlay.** `movie_export video` encodes a pass
+  recorded with a screenshot of every frame into an MP4 (ffmpeg): sharp
+  scaled pixels, the movie frame number and each frame's input with a LAG
+  marker in a bar under the picture, and optionally the emulator's WAV
+  dump as sound, aligned to the first frame. Frame numbers match every
+  other capture of the movie, so a frame seen in the video can be looked
+  up directly in labels and analyses.
+
 - **Movie research: registers, windows, flags and checkpoints.** Watched
   writes can log the CPU registers, stack words and chosen bytes at the
   moment of the write (`watch ... registers`), which shows where a copy
