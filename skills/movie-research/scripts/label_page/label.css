@@ -58,6 +58,9 @@ body.save-failed #status, body.save-failed #folder { color: #ffffff; font-weight
 #require-boxes { display: flex; flex-wrap: wrap; gap: 4px 14px; }
 #require-boxes .check { display: inline-flex; align-items: center; gap: 4px; flex-direction: row; color: var(--text); }
 header .add input { width: 7em; }
+.presets { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.presets button { font: inherit; font-size: 12px; color: var(--text); background: var(--panel);
+                  border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; cursor: pointer; }
 header button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
                 border-radius: 4px; padding: 3px 8px; cursor: pointer; }
 kbd { border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font-size: 12px; }

@@ -96,6 +96,7 @@ class Server(unittest.TestCase):
         data = json.loads(body)
         self.assertEqual([(e["frame"], e["guess"]) for e in data["events"]], [(100, "load")])
         self.assertEqual(data["events"][0]["changes"][0]["key"], "room:02")
+        self.assertEqual(data["door_presets"], [])
         self.assertEqual(self.request("GET", "/shots/shot_f0000090_every.png")[0], 200)
         self.assertEqual(self.request("GET", "/shots/..%2Ffrows.tsv")[0], 404)
         self.assertEqual(self.request("GET", "/shots/frames.tsv")[0], 404)

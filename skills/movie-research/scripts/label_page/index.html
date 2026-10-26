@@ -17,7 +17,7 @@
   </select>
   <span class="add"><input id="add-frame" type="number" min="0" placeholder="frame" aria-label="Frame for a new event">
   <button type="button" id="add-event" title="For a transition the list misses: adds an event at that frame">Add event</button></span>
-  <button type="button" id="fill-none" title="Labeled events (with a kind) whose Requires is empty get &quot;none&quot;">Fill "none" in labeled events</button>
+  <button type="button" id="fill-none" title="In labeled events (with a kind), empty requirement fields (this way, the other way, leaving) get &quot;none&quot;">Fill "none" in labeled events</button>
   <span id="status" role="status">loading</span>
 </header>
 <main>
@@ -36,8 +36,10 @@
       <label class="wide">Arrived in (the place in the after shot, whatever the values say)
         <input id="arrival" list="arrival-names" placeholder="e.g. Dribble Fountain: lobby"></label>
       <datalist id="arrival-names"></datalist>
-      <label>Exit door (at the origin) <input id="exit_door" list="door-names" placeholder="e.g. east door, top ladder"></label>
-      <label>Entry door (at the arrival) <input id="entry_door" list="door-names" placeholder="e.g. west door, bottom"></label>
+      <label>Exit door (at the origin) <input id="exit_door" list="door-names" placeholder="e.g. east door, top ladder">
+        <span class="presets" id="exit_door-presets"></span></label>
+      <label>Entry door (at the arrival) <input id="entry_door" list="door-names" placeholder="e.g. west door, bottom">
+        <span class="presets" id="entry_door-presets"></span></label>
       <datalist id="door-names"></datalist>
       <label>Kind <select id="kind"></select></label>
       <label>Exit method (at the origin) <select id="exit"></select></label>

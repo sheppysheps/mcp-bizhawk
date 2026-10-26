@@ -188,12 +188,13 @@ def with_manual_events(events, labels, shots):
 
 # ── Server ────────────────────────────────────────────────────────────────
 
-def make_handler(folder, token, events, port_ref, requires=None):
+def make_handler(folder, token, events, port_ref, requires=None, door_presets=None):
     """Build the request handler class bound to one export folder and token.
 
     Returns: a BaseHTTPRequestHandler subclass. `port_ref` is a one-item list
     holding the bound port (known only after binding); `requires` seeds the
-    requirement checkboxes (see load_labels).
+    requirement checkboxes (see load_labels); `door_presets` are the page's
+    quick-fill values for the door fields.
     Requires: the page files in PAGE_DIR.
     """
     shots = movie_export.list_shots(folder)
@@ -240,7 +241,8 @@ def make_handler(folder, token, events, port_ref, requires=None):
             elif path == "/api/events":
                 labels = load_labels(folder, requires)
                 self._send(200, {"folder": os.path.basename(folder), "labels": labels,
-                                 "events": with_manual_events(events, labels, shots)})
+                                 "events": with_manual_events(events, labels, shots),
+                                 "door_presets": list(door_presets or [])})
             elif path.startswith("/shots/"):
                 file = shot_path(folder, path[len("/shots/"):])
                 if not file:
@@ -291,7 +293,8 @@ def make_handler(folder, token, events, port_ref, requires=None):
     return Handler
 
 
-def serve(folder, sources, port=8770, fades=None, token=None, requires=None, only_pcs=None, skip_pcs=None):
+def serve(folder, sources, port=8770, fades=None, token=None, requires=None, only_pcs=None, skip_pcs=None,
+          door_presets=None):
     """Start the server (blocking until Ctrl+C) on 127.0.0.1 only.
 
     Returns: None. Prints the URL with the session token.
@@ -300,7 +303,8 @@ def serve(folder, sources, port=8770, fades=None, token=None, requires=None, onl
     token = token or secrets.token_urlsafe(24)
     events = build_events(folder, sources, fades=fades, only_pcs=only_pcs, skip_pcs=skip_pcs)
     port_ref = [port]
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(folder, token, events, port_ref, requires))
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(folder, token, events, port_ref, requires,
+                                                                         door_presets))
     port_ref[0] = server.server_address[1]
     print(f"{len(events)} events from {folder}")
     print(f"open http://127.0.0.1:{port_ref[0]}/?token={token}")
@@ -330,6 +334,9 @@ def main(argv=None):
     p.add_argument("--requires", metavar="LIST",
                    help="comma-separated requirement names shown as checkboxes (abilities, items, story flags), "
                         "e.g. \"double jump,key,boss 1\"; kept in labels.json")
+    p.add_argument("--door-presets", metavar="LIST", default="only-exit (west),only-exit (east)",
+                   help="comma-separated quick-fill values shown as buttons under the door fields "
+                        "(default: \"only-exit (west),only-exit (east)\")")
     args = p.parse_args(argv)
     if not os.path.exists(os.path.join(args.export, "frames.tsv")):
         print(f"{args.export}: not a movie_recorder export folder")
@@ -337,7 +344,8 @@ def main(argv=None):
     sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
     requires = [r.strip() for r in (args.requires or "").split(",") if r.strip()]
     serve(args.export, sources, port=args.port, fades=args.fades or None, requires=requires,
-          only_pcs=movie_export.parse_only_pcs(args.only_pc), skip_pcs=movie_export.parse_only_pcs(args.skip_pc))
+          only_pcs=movie_export.parse_only_pcs(args.only_pc), skip_pcs=movie_export.parse_only_pcs(args.skip_pc),
+          door_presets=[d.strip() for d in args.door_presets.split(",") if d.strip()])
     return 0
 
 

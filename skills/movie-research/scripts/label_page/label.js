@@ -18,6 +18,7 @@ let labels = { version: 1, places: {}, events: {}, items: [] };
 let shown = [];
 let current = 0;
 let saveTimer = null;
+let doorPresets = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -76,20 +77,47 @@ function renderRequireBoxes() {
   }
 }
 
-/** Put "none" into Requires of every labeled event (one with a kind) whose
- *  Requires is still empty. Returns: nothing. */
+/** Put "none" into the empty requirement fields (this way, the other way,
+ *  leaving the arrival room) of every labeled event (one with a kind).
+ *  Returns: nothing. */
 function fillNone() {
   let n = 0;
   for (const ev of events) {
     const l = labels.events[String(ev.frame)];
-    if (l && l.kind && !(l.requires || "").trim()) {
-      l.requires = "none";
-      n += 1;
+    if (!l || !l.kind) continue;
+    for (const f of ["requires", "requires_back", "leave_requires"]) {
+      if (!(l[f] || "").trim()) {
+        l[f] = "none";
+        n += 1;
+      }
     }
   }
   if (n) queueSave();
   render();
-  $("status").textContent = n ? `"none" filled in ${n} events; saving` : "nothing to fill";
+  $("status").textContent = n ? `"none" filled into ${n} fields; saving` : "nothing to fill";
+}
+
+/** Add one quick-fill button per door preset under the exit and entry door
+ *  fields; a click sets that field of the current event. Returns: nothing. */
+function renderDoorPresets(presets) {
+  for (const field of ["exit_door", "entry_door"]) {
+    const box = $(`${field}-presets`);
+    box.replaceChildren();
+    for (const value of presets) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = value;
+      b.addEventListener("click", () => {
+        const ev = shown[current];
+        if (!ev) return;
+        $(field).value = value;
+        eventLabels(ev)[field] = value;
+        queueSave();
+        refreshArrivalNames();
+      });
+      box.appendChild(b);
+    }
+  }
 }
 
 /** Shorten a long hex value to its ends ("77FFFFFF…0000"). Returns: string. */
@@ -286,6 +314,7 @@ async function start() {
   });
 
   if (!(await loadEvents())) return;
+  renderDoorPresets(doorPresets);
   fillSelect($("guess-filter"), [...new Set(events.map((e) => e.guess))].sort());
   $("guess-filter").firstChild.textContent = "all methods";
   $("status").textContent = `${events.length} events`;
@@ -301,6 +330,7 @@ async function loadEvents() {
   }
   const data = await r.json();
   events = data.events;
+  doorPresets = data.door_presets || [];
   labels = Object.assign({ version: 1, places: {}, events: {}, items: [] }, data.labels);
   $("folder").textContent = data.folder;
   shown = [];
