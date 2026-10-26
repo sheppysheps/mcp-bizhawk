@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sheppysheps/mcp-bizhawk/schemas/findings-1.schema.json",
+  "title": "findings/1: one fact about one address (one JSON object per line)",
+  "description": "Defined by dashboard ADR 0003. Game-agnostic: the fork owns the schema; findings about a game live in that game's repo.",
+  "type": "object",
+  "required": ["format", "id", "kind", "address", "domain", "bank", "width", "rom_sha1", "confidence", "evidence"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {"const": "findings/1"},
+    "id": {"type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$", "description": "Stable dotted name, unique in the repo"},
+    "kind": {"enum": ["variable", "flag", "pointer", "code", "table", "string", "graphics"]},
+    "address": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"},
+    "domain": {"type": "string", "description": "BizHawk memory domain name, e.g. WRAM, HRAM, ROM, CartRAM, VRAM, System Bus"},
+    "bank": {"$ref": "#/$defs/bank"},
+    "width": {"type": "integer", "minimum": 1},
+    "bits": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$", "description": "Bit mask, for flags"},
+    "rom_sha1": {"type": "string", "pattern": "^[0-9A-Fa-f]{40}$"},
+    "confidence": {"enum": ["confirmed", "likely", "lead"]},
+    "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+    "confirmed_by": {"type": "string", "description": "Where it was confirmed: a disassembly address, a test, a commit"},
+    "supersedes": {"type": "string", "description": "The id (and short reason) of the finding this one replaces"},
+    "superseded_by": {"type": "string"},
+    "name": {"type": "string"},
+    "labels": {"type": "array", "items": {"type": "object", "required": ["capture", "event"],
+      "properties": {"capture": {"type": "string"}, "event": {"type": ["string", "integer"]}}}}
+  },
+  "allOf": [
+    {"if": {"properties": {"confidence": {"const": "confirmed"}}}, "then": {"required": ["confirmed_by"]}},
+    {"if": {"properties": {"kind": {"const": "flag"}}}, "then": {"required": ["bits"]}}
+  ],
+  "$defs": {
+    "bank": {
+      "description": "Which bank, or null when unbanked or unknown (say which in the evidence note)",
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "required": ["kind", "n"], "additionalProperties": false,
+         "properties": {"kind": {"enum": ["rom", "wram", "vram", "sram"]}, "n": {"type": "integer", "minimum": 0}}}
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["capture", "frames", "method"],
+      "properties": {
+        "capture": {"type": "string"},
+        "frames": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2,
+                   "description": "[first, last]"},
+        "writers": {"type": "array", "items": {"type": "object", "required": ["pc", "bank"],
+          "properties": {"pc": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"}, "bank": {"$ref": "#/$defs/bank"}}}},
+        "method": {"type": "string"},
+        "note": {"type": "string"}
+      }
+    }
+  }
+}

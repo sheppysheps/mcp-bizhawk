@@ -25,8 +25,9 @@ go to a JSON file with --json, so big data never has to be pasted anywhere.
                                      transitions: changes of named variables grouped,
                                      with writer PCs, lag burst, screenshots before and
                                      after, and a guessed method (load, fade, instant)
-  catalog  <export> --source ...     rooms.json, doors.json, items.json from the
-                                     labeling station's labels.json
+  catalog  <export> --source ...     rooms.json, doors.json, items.json (catalog/1) from
+                                     the labeling station's labels.json
+  convert-catalog <folder>           draft-1 catalog files -> catalog/1
   video    <export> --out run.mp4    MP4 from a pass with snapshot_every = 1, with the
                                      frame number and each frame's input drawn under
                                      the picture (needs ffmpeg)
@@ -628,55 +629,163 @@ def region_of(place):
     return place.split(":")[0].strip() if ":" in place else place
 
 
-def catalog(rows, labels, capture=""):
-    """Rooms, doors and items catalogs from labeled events (labeling station).
+CATALOG_FORMAT = "catalog/1"
 
-    The person's "Arrived in" names are the ground truth for places; the
-    watched values seen on arrival are evidence. A value that arrived in more
-    than one place is listed as a conflict (it isn't a place ID on its own).
-    Doors are directed: from the previous labeled place to this one, merged
-    when kind, doors and requirements agree, with every frame they were used.
-    Format "draft-1" (the shared findings format is still being agreed).
-    Returns: dict {"rooms": {...}, "doors": {...}, "items": {...}}.
-    Requires: `rows` from events(); `labels` as saved by label_server.
+
+def slug(name):
+    """A stable id from a place name: lowercase ASCII words joined by "-".
+    Returns: str ("place" when nothing is left). Requires: nothing."""
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s or "place"
+
+
+def assign_place_ids(labels):
+    """Give every "Arrived in" name a stable id, once (dashboard ADR 0003).
+
+    Ids live in labels["place_ids"] ({name: id}); a name that already has one
+    keeps it, so renaming a place (which moves the id to the new name) never
+    breaks references. New ids are the name's slug, with -2, -3 ... when taken.
+    Returns: the number of ids added. Requires: labels as saved by label_server.
     """
+    ids = labels.setdefault("place_ids", {})
+    taken = set(ids.values())
+    added = 0
+    for key in sorted(labels.get("events", {}), key=lambda k: int(k) if k.isdigit() else -1):
+        name = (labels["events"][key].get("arrival") or "").strip()
+        if not name or name in ids:
+            continue
+        base = slug(name)
+        pid, n = base, 2
+        while pid in taken:
+            pid, n = f"{base}-{n}", n + 1
+        ids[name] = pid
+        taken.add(pid)
+        added += 1
+    return added
+
+
+def requirement_list(text):
+    """A requirements field as a list: "none" -> [], empty -> None (unknown),
+    "Monkey, key" -> ["Monkey", "key"]. Returns: list or None. Requires: nothing."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    items = [t.strip() for t in text.split(",") if t.strip()]
+    return [] if [t.lower() for t in items] == ["none"] else [t for t in items if t.lower() != "none"]
+
+
+def writers_of(pcs):
+    """Writer PCs in the evidence shape {pc, bank}; bank stays None when the
+    capture can't tell (BizHawk 1.x; the evidence note says so).
+    Returns: list. Requires: nothing."""
+    return [{"pc": pc, "bank": None} for pc in pcs]
+
+
+def catalog(rows, labels, capture="", bank_note="BizHawk 1.x does not report the ROM bank of a writer PC"):
+    """Rooms, doors and items catalogs in format catalog/1 (dashboard ADR 0003).
+
+    The person's "Arrived in" names are the ground truth for places, each with
+    a stable id (assign_place_ids); the watched values seen on arrival are
+    evidence, not identity, and a value seen in more than one place is listed
+    as a conflict. Transitions are directed, from the previous labeled place
+    to this one, merged when kind, doors, methods and requirements agree.
+    Requirements are lists of the labeler's vocabulary names: [] means none,
+    None means unknown. Evidence follows the findings shape.
+    Returns: dict {"rooms", "doors", "items"} of JSON-ready dicts.
+    Requires: `rows` from events(); `labels` as saved by label_server (place
+    ids are added to it when missing).
+    """
+    assign_place_ids(labels)
+    ids = labels["place_ids"]
     by_frame = {r["frame"]: r for r in rows}
-    head = {"format": "draft-1", "capture": capture}
-    places, value_names, doors, prev = {}, {}, {}, None
+    head = {"format": CATALOG_FORMAT, "capture": capture}
+    method = "movie capture, labeled in the labeling station"
+    places, value_ids, doors, prev = {}, {}, {}, None
     for key in sorted(labels.get("events", {}), key=lambda k: int(k) if k.isdigit() else -1):
         if not key.isdigit():
             continue
         frame, lab = int(key), labels["events"][key]
         kind = (lab.get("kind") or "").strip()
-        place = (lab.get("arrival") or "").strip()
-        if kind in NOT_TRANSITIONS or not place:
+        name = (lab.get("arrival") or "").strip()
+        if kind in NOT_TRANSITIONS or not name:
             continue
+        pid = ids[name]
         ev = by_frame.get(frame, {"changes": [], "lag": 0, "guess": "manual"})
         values = {c["source"]: f"{c['new']:0{2 * c['width']}X}" for c in ev["changes"]}
-        p = places.setdefault(place, {"name": place, "region": region_of(place), "visits": [], "values": {}})
+        p = places.setdefault(pid, {"id": pid, "name": name, "region": region_of(name), "visits": [], "observed": {}})
         p["visits"].append(frame)
         for source, value in values.items():
-            p["values"].setdefault(f"{source}:{value}", []).append(frame)
-            value_names.setdefault(f"{source}:{value}", set()).add(place)
-        if prev is not None and prev != place:
-            fields = ("exit_door", "entry_door", "exit", "entry", "requires", "requires_back", "leave_requires")
-            info = {f: (lab.get(f) or "").strip() for f in fields}
-            dkey = (prev, place, kind) + tuple(info[f] for f in fields)
-            d = doors.setdefault(dkey, dict({"from": prev, "to": place, "kind": kind, "frames": [], "evidence": []},
-                                            **info))
+            p["observed"].setdefault(f"{source}:{value}", []).append(frame)
+            value_ids.setdefault(f"{source}:{value}", set()).add(pid)
+        if prev is not None and prev != pid:
+            info = {f: (lab.get(f) or "").strip() for f in ("exit_door", "entry_door", "exit", "entry")}
+            reqs = {f: requirement_list(lab.get(f)) for f in ("requires", "requires_back", "leave_requires")}
+            dkey = (prev, pid, kind) + tuple(info.values()) + tuple(
+                tuple(v) if v is not None else None for v in reqs.values())
+            if dkey not in doors:
+                tid = f"{prev}.{slug(info['exit_door']) if info['exit_door'] else 'x'}--" \
+                      f"{pid}.{slug(info['entry_door']) if info['entry_door'] else 'x'}"
+                used = {d["id"] for d in doors.values()}
+                base, n = tid, 2
+                while tid in used:
+                    tid, n = f"{base}-{n}", n + 1
+                doors[dkey] = dict({"id": tid, "from": prev, "to": pid, "kind": kind}, **info, **reqs,
+                                   frames=[], evidence=[])
+            d = doors[dkey]
             d["frames"].append(frame)
-            d["evidence"].append({"frame": frame, "guess": ev["guess"], "lag": ev["lag"],
-                                  "changes": [{"source": c["source"], "new": values.get(c["source"]),
-                                               "pcs": c["pcs"]} for c in ev["changes"]],
-                                  "notes": (lab.get("notes") or "").strip()})
-        prev = place
-    conflicts = {v: sorted(n) for v, n in value_names.items() if len(n) > 1}
+            pcs = sorted({pc for c in ev["changes"] for pc in c["pcs"]})
+            d["evidence"].append({"capture": capture, "frames": [frame, frame], "writers": writers_of(pcs),
+                                  "method": method,
+                                  "note": "; ".join(x for x in (
+                                      f"{ev['guess']}, lag {ev['lag']}",
+                                      ", ".join(f"{s} -> {v}" for s, v in values.items()),
+                                      bank_note if pcs else "",
+                                      (lab.get("notes") or "").strip()) if x)})
+        prev = pid
+    conflicts = {v: sorted(n) for v, n in value_ids.items() if len(n) > 1}
     for p in places.values():
-        p["conflicting_values"] = sorted(v for v in p["values"] if v in conflicts)
+        p["conflicting_values"] = sorted(v for v in p["observed"] if v in conflicts)
     return {"rooms": dict(head, places=sorted(places.values(), key=lambda p: p["visits"][0]), conflicts=conflicts),
-            "doors": dict(head, doors=sorted(doors.values(), key=lambda d: d["frames"][0])),
-            "items": dict(head, items=labels.get("items") or [],
-                          note="items are labeled separately; none labeled yet" if not labels.get("items") else "")}
+            "doors": dict(head, transitions=sorted(doors.values(), key=lambda d: d["frames"][0])),
+            "items": dict(head, pickups=[])}
+
+
+def convert_draft1(rooms, doors, place_ids=None):
+    """Turn draft-1 rooms.json and doors.json into catalog/1.
+
+    Place ids come from `place_ids` ({name: id}, e.g. labels.json) or the
+    name's slug. Draft requirement strings become lists ("none" -> [], empty
+    -> None); draft evidence becomes findings-shaped evidence.
+    Returns: dict {"rooms", "doors", "items"} like catalog().
+    Requires: dicts loaded from draft-1 files.
+    """
+    ids = dict(place_ids or {})
+    pid = lambda name: ids.setdefault(name, slug(name))  # noqa: E731
+    capture = rooms.get("capture", "")
+    head = {"format": CATALOG_FORMAT, "capture": capture}
+    places = [{"id": pid(p["name"]), "name": p["name"], "region": p.get("region") or region_of(p["name"]),
+               "visits": p.get("visits", []), "observed": p.get("values", {}),
+               "conflicting_values": p.get("conflicting_values", [])} for p in rooms.get("places", [])]
+    conflicts = {v: sorted(pid(n) for n in names) for v, names in rooms.get("conflicts", {}).items()}
+    transitions, used = [], set()
+    for d in doors.get("doors", []):
+        base = f"{pid(d['from'])}.{slug(d.get('exit_door') or 'x')}--{pid(d['to'])}.{slug(d.get('entry_door') or 'x')}"
+        tid, n = base, 2
+        while tid in used:
+            tid, n = f"{base}-{n}", n + 1
+        used.add(tid)
+        transitions.append({
+            "id": tid, "from": pid(d["from"]), "to": pid(d["to"]), "kind": d.get("kind", ""),
+            **{f: d.get(f, "") for f in ("exit_door", "entry_door", "exit", "entry")},
+            **{f: requirement_list(d.get(f)) for f in ("requires", "requires_back", "leave_requires")},
+            "frames": d.get("frames", []),
+            "evidence": [{"capture": capture, "frames": [e["frame"], e["frame"]],
+                          "writers": [{"pc": pc, "bank": None} for c in e.get("changes", []) for pc in c.get("pcs", [])],
+                          "method": "movie capture, labeled in the labeling station (converted from draft-1)",
+                          "note": (e.get("notes") or "").strip()} for e in d.get("evidence", [])]})
+    return {"rooms": dict(head, places=places, conflicts=conflicts),
+            "doors": dict(head, transitions=transitions),
+            "items": dict(head, pickups=[])}
 
 
 def cmd_catalog(args):
@@ -690,14 +799,45 @@ def cmd_catalog(args):
         labels = json.load(f)
     sources = [(name, int(addr, 0), int(width, 0)) for name, addr, width in args.source]
     rows = events(e, sources, only_pcs=parse_only_pcs(args.only_pc), skip_pcs=parse_only_pcs(args.skip_pc))
+    known = dict(labels.get("place_ids") or {})
     out = catalog(rows, labels, capture=os.path.basename(os.path.normpath(args.export)))
-    target = args.out or args.export
+    write_catalog(out, args.out or args.export)
+    new = len(labels["place_ids"]) - len(known)
+    if new:
+        # labels.json belongs to the labeling station: it stores ids when it
+        # loads the capture. Ids made here only last until then.
+        print(f"note: {new} places had no stored id; open the labeling station once to store them")
+    return 0
+
+
+def write_catalog(out, target):
+    """Write rooms.json, doors.json and items.json into `target`, and print a
+    one-line summary. Returns: None. Requires: write access to `target`."""
     os.makedirs(target, exist_ok=True)
     for name, data in out.items():
         with open(os.path.join(target, f"{name}.json"), "w", encoding="utf-8", newline="\n") as f:
             json.dump(data, f, indent=1, ensure_ascii=False)
-    print(f"{len(out['rooms']['places'])} places ({len(out['rooms']['conflicts'])} conflicting values), "
-          f"{len(out['doors']['doors'])} doors, {len(out['items']['items'])} items -> {target}")
+    print(f"{out['rooms']['format']}: {len(out['rooms']['places'])} places "
+          f"({len(out['rooms']['conflicts'])} conflicting values), {len(out['doors']['transitions'])} transitions, "
+          f"{len(out['items']['pickups'])} pickups -> {target}")
+
+
+def cmd_convert_catalog(args):
+    """Convert draft-1 rooms.json and doors.json in a folder to catalog/1.
+    Returns: exit code (1 when the files aren't draft-1)."""
+    def read(name):
+        with open(os.path.join(args.folder, name), encoding="utf-8") as f:
+            return json.load(f)
+    rooms, doors = read("rooms.json"), read("doors.json")
+    if rooms.get("format") != "draft-1" or doors.get("format") != "draft-1":
+        print(f"not draft-1 (rooms: {rooms.get('format')}, doors: {doors.get('format')})")
+        return 1
+    ids = None
+    labels_path = os.path.join(args.folder, "labels.json")
+    if os.path.exists(labels_path):
+        with open(labels_path, encoding="utf-8") as f:
+            ids = json.load(f).get("place_ids")
+    write_catalog(convert_draft1(rooms, doors, ids), args.out or args.folder)
     return 0
 
 
@@ -1269,6 +1409,11 @@ def main(argv=None):
     ca.add_argument("--skip-pc", nargs=2, action="append", metavar=("NAME", "PCS"))
     ca.add_argument("--out", help="folder for the JSON files (default: the export folder)")
     ca.set_defaults(fn=cmd_catalog)
+
+    cc = sub.add_parser("convert-catalog", help="convert draft-1 rooms.json and doors.json to catalog/1")
+    cc.add_argument("folder", help="folder with the draft-1 files (and labels.json for place ids, if present)")
+    cc.add_argument("--out", help="folder for the catalog/1 files (default: the same folder)")
+    cc.set_defaults(fn=cmd_convert_catalog)
 
     vd = sub.add_parser("video", help="MP4 from per-frame screenshots, with frame counter and input overlay")
     vd.add_argument("export")

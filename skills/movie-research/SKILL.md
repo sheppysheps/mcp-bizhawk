@@ -55,6 +55,8 @@ python movie_export.py flags   <out> --snapshots WRAM --once --from 1100   # the
 python movie_export.py locate  <out> --frame 5000 --domain CartRAM --inside WRAM   # live copy of the save file
 python movie_export.py timeline <out> --address 0xC9F9 --width 2 --unique   # one row per room/map seen
 python movie_export.py events  <out> --source room 0xC9F9 2 --source door 0xC100 1 --fades 0.5   # every transition
+python label_server.py         <out> --source room 0xC9F9 2 --requires "key,double jump"   # local page to name them
+python movie_export.py catalog <out> --source room 0xC9F9 2   # rooms/doors/items.json (catalog/1, schemas/ in the repo)
 python movie_export.py compare <outA> <outB>               # first divergence between two recordings
 python movie_export.py execs   <out> --address 0x1234 --group HL,DE,stack0   # distinct register values when code ran
 python movie_export.py shots   <out> --dark 0.5            # screenshots darker than half the median: fades

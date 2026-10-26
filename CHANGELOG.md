@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Catalog format `catalog/1` and schemas.** `movie_export catalog`
+  writes rooms, transitions and pickups in the format agreed across the
+  repos: places keep a stable id when renamed, transitions refer to them
+  by id, requirements are lists (empty for none, null for unknown), and
+  evidence names the capture, frames and writer PCs. `convert-catalog`
+  upgrades older `draft-1` files. JSON Schemas for findings and catalogs
+  are in `schemas/`. The labeling page shows each place's id and can
+  rename a place everywhere.
+
 - **Movie videos with an overlay.** `movie_export video` encodes a pass
   recorded with a screenshot of every frame into an MP4 (ffmpeg): sharp
   scaled pixels, the movie frame number and each frame's input with a LAG

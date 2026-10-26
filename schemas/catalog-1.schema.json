@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sheppysheps/mcp-bizhawk/schemas/catalog-1.schema.json",
+  "title": "catalog/1: places, transitions and pickups (rooms.json, doors.json, items.json)",
+  "description": "Defined by dashboard ADR 0003; written by movie_export catalog. Places are named by people (ids are stable slugs); watched values are evidence, not identity. Requirements are lists of the labeler's vocabulary names: [] means none, null means unknown.",
+  "type": "object",
+  "required": ["format", "capture"],
+  "properties": {
+    "format": {"const": "catalog/1"},
+    "capture": {"type": "string"}
+  },
+  "oneOf": [
+    {"required": ["places", "conflicts"], "properties": {
+      "places": {"type": "array", "items": {"$ref": "#/$defs/place"}},
+      "conflicts": {"type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/id"}}}}},
+    {"required": ["transitions"], "properties": {
+      "transitions": {"type": "array", "items": {"$ref": "#/$defs/transition"}}}},
+    {"required": ["pickups"], "properties": {
+      "pickups": {"type": "array", "items": {"$ref": "#/$defs/pickup"}}}}
+  ],
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"},
+    "requirements": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "string", "minLength": 1}}]},
+    "place": {
+      "type": "object",
+      "required": ["id", "name", "region", "visits", "observed"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string"},
+        "region": {"type": "string"},
+        "visits": {"type": "array", "items": {"type": "integer"}},
+        "observed": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "integer"}},
+                     "description": "source:value -> frames seen on arrival"},
+        "conflicting_values": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "transition": {
+      "type": "object",
+      "required": ["id", "from", "to", "kind", "exit", "entry", "exit_door", "entry_door",
+                   "requires", "requires_back", "leave_requires", "frames", "evidence"],
+      "properties": {
+        "id": {"type": "string"},
+        "from": {"$ref": "#/$defs/id"},
+        "to": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string"},
+        "exit": {"type": "string", "description": "exit method at the origin"},
+        "entry": {"type": "string", "description": "state on arrival"},
+        "exit_door": {"type": "string"},
+        "entry_door": {"type": "string"},
+        "requires": {"$ref": "#/$defs/requirements"},
+        "requires_back": {"$ref": "#/$defs/requirements"},
+        "leave_requires": {"$ref": "#/$defs/requirements"},
+        "frames": {"type": "array", "items": {"type": "integer"}},
+        "evidence": {"type": "array", "items": {"$ref": "findings-1.schema.json#/$defs/evidence"}}
+      }
+    },
+    "pickup": {
+      "type": "object",
+      "required": ["place", "item", "class", "frames", "evidence"],
+      "properties": {
+        "place": {"$ref": "#/$defs/id"},
+        "item": {"type": "string"},
+        "class": {"enum": ["major", "key", "minor", "consumable"]},
+        "frames": {"type": "array", "items": {"type": "integer"}},
+        "evidence": {"type": "array", "items": {"$ref": "findings-1.schema.json#/$defs/evidence"}}
+      }
+    }
+  }
+}

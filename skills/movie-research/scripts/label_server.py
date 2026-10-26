@@ -44,7 +44,7 @@ PAGE_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
               "/label.js": ("label.js", "text/javascript; charset=utf-8"),
               "/label.css": ("label.css", "text/css; charset=utf-8")}
 MAX_LABELS_BYTES = 4 * 1024 * 1024
-LABEL_KEYS = {"version", "places", "events", "items", "vocab"}
+LABEL_KEYS = {"version", "places", "events", "items", "vocab", "place_ids"}
 HEADERS = {
     # Scripts and styles only from this server, no inline code, no framing.
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
@@ -93,7 +93,7 @@ def validate_labels(data):
     extra = set(data) - LABEL_KEYS
     if extra:
         return f"unexpected keys: {', '.join(sorted(extra))}"
-    for key, kind in (("places", dict), ("events", dict), ("vocab", dict), ("items", list)):
+    for key, kind in (("places", dict), ("events", dict), ("vocab", dict), ("place_ids", dict), ("items", list)):
         if key in data and not isinstance(data[key], kind):
             return f"{key} must be a {'list' if kind is list else 'JSON object'}"
     return None
@@ -240,6 +240,10 @@ def make_handler(folder, token, events, port_ref, requires=None, door_presets=No
                     self._send(200, f.read(), ctype)
             elif path == "/api/events":
                 labels = load_labels(folder, requires)
+                # The station owns labels.json, so it stores new place ids
+                # (dashboard ADR 0003) as soon as it sees new place names.
+                if movie_export.assign_place_ids(labels):
+                    save_labels(folder, labels)
                 self._send(200, {"folder": os.path.basename(folder), "labels": labels,
                                  "events": with_manual_events(events, labels, shots),
                                  "door_presets": list(door_presets or [])})
