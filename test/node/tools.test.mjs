@@ -131,6 +131,15 @@ test("play_input_sequence accepts json.lua's {} for an empty observation list", 
   assert.match(res.content[0].text, /^Played 1 frames\. Final framecount: 10\.\nCaptured 0 observations\./);
 });
 
+test("reset reports re-armed breakpoints, and works with older bridges", async () => {
+  let res = await harness({ evalLua: false }, { rearmed: 2, failed: {} }).call("bizhawk_reset");
+  assert.equal(res.content[0].text, "Core reset; re-armed 2 breakpoint(s)");
+  res = await harness({ evalLua: false }, { rearmed: 0, failed: { 3: "boom" } }).call("bizhawk_reset");
+  assert.equal(res.content[0].text, "Core reset; could NOT re-arm: #3 (boom)");
+  res = await harness({ evalLua: false }, true).call("bizhawk_reset");
+  assert.equal(res.content[0].text, "Core reset");
+});
+
 test("malformed arguments are rejected before reaching the bridge", async () => {
   const h = harness();
   await assert.rejects(h.call("bizhawk_play_input_sequence", { frames: [{ Start: true }] }),

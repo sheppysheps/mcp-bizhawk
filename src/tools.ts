@@ -753,8 +753,8 @@ export const TOOLS: Tool[] = [
     description:
       "PURPOSE: Reset the loaded core — equivalent to a hard reset (power cycle) of the emulated console. " +
       "USAGE: Use to start fresh from boot. To return to a specific known-good point instead of boot, use bizhawk_load_state with a previously saved state file. " +
-      "BEHAVIOR: DESTRUCTIVE: RAM contents become indeterminate (typically zeroed), CPU returns to the reset vector, framecount resets to 0, joypad state clears, and any in-progress audio/video state is discarded. The loaded ROM stays loaded — only volatile state is cleared. Unsaved game progress is lost. Returns an error if the loaded core doesn't expose client.reboot_core — check `capabilities.reboot_core` in bizhawk_get_info first. " +
-      "RETURNS: Single line 'Core reset'.",
+      "BEHAVIOR: DESTRUCTIVE: RAM contents become indeterminate (typically zeroed), CPU returns to the reset vector, framecount resets to 0, joypad state clears, and any in-progress audio/video state is discarded. The loaded ROM stays loaded — only volatile state is cleared. Unsaved game progress is lost. Rebooting the core discards its memory callbacks, so the bridge registers every breakpoint again afterwards (their logged hits are kept). Returns an error if the loaded core doesn't expose client.reboot_core — check `capabilities.reboot_core` in bizhawk_get_info first. " +
+      "RETURNS: Single line 'Core reset', plus how many breakpoints were re-armed and any that couldn't be.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -1309,7 +1309,18 @@ export function registerTools(server: Server, backend: Backend & { notice?(): st
 
       case "bizhawk_pause":         await backend.call("pause");          return ok("Emulation paused");
       case "bizhawk_unpause":       await backend.call("unpause");        return ok("Emulation resumed");
-      case "bizhawk_reset":         await backend.call("reset");          return ok("Core reset");
+      case "bizhawk_reset": {
+        // Rebooting the core drops its memory callbacks; the bridge registers
+        // every breakpoint again and says how that went (older bridges send true).
+        const r = await backend.call<boolean | { rearmed?: number; failed?: Record<string, string> }>("reset");
+        let text = "Core reset";
+        if (r && typeof r === "object") {
+          if (r.rearmed) text += `; re-armed ${r.rearmed} breakpoint(s)`;
+          const failed = Object.entries(r.failed ?? {});
+          if (failed.length) text += `; could NOT re-arm: ${failed.map(([id, msg]) => `#${id} (${msg})`).join(", ")}`;
+        }
+        return ok(text);
+      }
       case "bizhawk_frame_advance": {
         const f = await backend.call<number>("frame_advance", { count: p.count ?? 1 });
         return ok(`Advanced ${p.count ?? 1} frame(s). Framecount: ${f}`);
