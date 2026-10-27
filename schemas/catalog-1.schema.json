@@ -47,9 +47,12 @@
         "entry": {"type": "string", "description": "state on arrival"},
         "exit_door": {"type": "string"},
         "entry_door": {"type": "string"},
-        "requires": {"$ref": "#/$defs/requirements"},
-        "requires_back": {"$ref": "#/$defs/requirements"},
-        "leave_requires": {"$ref": "#/$defs/requirements"},
+        "requires": {"$ref": "#/$defs/requirements",
+                     "description": "what is needed to take this transition from `from` to `to`"},
+        "requires_back": {"$ref": "#/$defs/requirements",
+                          "description": "what is needed to take it the other way, `to` back to `from`"},
+        "leave_requires": {"$ref": "#/$defs/requirements",
+                           "description": "what is needed to get out of the arrival place `to` by any exit (e.g. climbing out after falling in); differs from requires_back when the way back is not the only exit"},
         "frames": {"type": "array", "items": {"type": "integer"}},
         "evidence": {"type": "array", "items": {"$ref": "findings-1.schema.json#/$defs/evidence"}}
       }
