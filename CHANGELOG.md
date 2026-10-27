@@ -205,6 +205,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A pause_on_hit breakpoint no longer wedges the bridge.** The breakpoint
+  callback paused emulation mid-frame, so the next `emu.frameadvance()` in
+  `frame_advance` or `play_input_sequence` waited forever and every later call
+  timed out until BizHawk was killed. The callback now only requests the
+  pause; the frame loops stop at the end of that frame and pause there, as the
+  tool description always said. `frame_advance` reports
+  `Advanced K of N frame(s): breakpoint #ID paused emulation`, and
+  `play_input_sequence` stops with `stop_reason: "breakpoint #ID"`.
 - **Hub restart loop after a rebuild:** a session started before
   `npm run build` treated the newer hub as stale, shut it down, respawned the
   same newer build, and did it again on every call, cutting off a BizHawk

@@ -631,6 +631,23 @@ local function is_paused()
     return CAPS.ispaused and client.ispaused() == true
 end
 
+-- A pause_on_hit breakpoint fires in the middle of a frame. Pausing right
+-- there made the next emu.frameadvance() of a stepping loop wait forever (it
+-- doesn't return while paused) and wedged the bridge, so the callback only
+-- records the request; frame loops stop at the end of that frame and call
+-- take_pause_request() to pause there.
+local pause_request = nil   -- id of the breakpoint that asked to pause, or nil
+
+--- Pause now if a breakpoint asked for it during the frame just run.
+--- @return integer|nil id of the breakpoint that asked, or nil if none did.
+--- @requires pause() (BizHawk's client/emu pause API).
+local function take_pause_request()
+    local id = pause_request
+    pause_request = nil
+    if id ~= nil then pause() end
+    return id
+end
+
 -- emu.frameadvance() waits while emulation is paused, so stepping from a
 -- paused state unpauses for the steps and pauses again afterwards.
 local function while_running(fn)
@@ -701,6 +718,16 @@ local function cmd_play_input_sequence(p)
         emu.frameadvance()
         count = count + 1
 
+        -- A pause_on_hit breakpoint fired during this frame: stop here.
+        if pause_request ~= nil then
+            stopped = true
+            stop_reason = "breakpoint #" .. tostring(pause_request)
+            if screenshot_every or observe_memory then
+                capture_observation()
+            end
+            break
+        end
+
         -- Check stop condition AFTER the frame advances
         if stop_spec then
             local cur = read_memory_widthed(stop_spec.domain, stop_spec.address, stop_spec.width)
@@ -722,6 +749,7 @@ local function cmd_play_input_sequence(p)
     end
 
     if was_paused then pause() end
+    take_pause_request()
     return {
         played = count,
         final_framecount = CAPS.framecount and emu.framecount() or nil,
@@ -733,13 +761,27 @@ end
 
 local function cmd_pause(p) pause(); return true end
 local function cmd_unpause(p) unpause(); return true end
+--- Step N frames, stopping early at the end of a frame in which a
+--- pause_on_hit breakpoint fired (emulation is then left paused).
+--- @return integer|table the new framecount when all N frames ran, or
+---   { framecount, advanced, paused_by_breakpoint = id } when a breakpoint
+---   stopped it; older Node sides only ever see the number.
+--- @requires emu.frameadvance; the pause API when breakpoints pause.
 local function cmd_frame_advance(p)
     if not CAPS.frameadvance then error("emu.frameadvance not available") end
     local n = p.count or 1
-    return while_running(function()
-        for _ = 1, n do emu.frameadvance() end
+    local advanced = 0
+    local framecount = while_running(function()
+        for _ = 1, n do
+            emu.frameadvance()
+            advanced = advanced + 1
+            if pause_request ~= nil then break end
+        end
         return CAPS.framecount and emu.framecount() or nil
     end)
+    local hit = take_pause_request()
+    if hit == nil then return framecount end
+    return { framecount = framecount, advanced = advanced, paused_by_breakpoint = hit }
 end
 -- Defined in the breakpoint section below (which comes later in this file):
 -- re-registers every breakpoint's callbacks after the core is rebuilt.
@@ -847,7 +889,9 @@ local function record_hit(bp, addr, val, flags)
     local hits = bp.hits
     hits[#hits + 1] = hit
     if #hits > bp.max_hits then table.remove(hits, 1); bp.dropped = bp.dropped + 1 end
-    if bp.pause_on_hit and CAPS.pause then pause() end
+    -- Never pause inside the callback (see pause_request): ask, and the frame
+    -- loop pauses at the end of this frame. The first breakpoint to ask wins.
+    if bp.pause_on_hit and CAPS.pause then pause_request = pause_request or bp.id end
 end
 
 local function breakpoint_summary(bp)
@@ -1250,4 +1294,7 @@ while true do
     -- bridge answering until someone unpaused by hand; emu.yield() lets the
     -- script keep polling without advancing a frame.
     if CAPS.yield and is_paused() then emu.yield() else emu.frameadvance() end
+    -- A pause_on_hit breakpoint that fired while running freely pauses here,
+    -- at the end of its frame.
+    take_pause_request()
 end
