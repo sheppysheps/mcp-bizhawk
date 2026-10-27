@@ -39,6 +39,27 @@ class SaveFile(unittest.TestCase):
         with self.assertRaises(ValueError):
             save_file.patch(save, 0, 8, 8, "sum16-not-le", sets=[(9, 1)])
 
+    def test_build_reproduces_a_real_save_from_ram(self):
+        # The live block sits at offset 4 in "RAM"; the game's save is that
+        # block + checksum + FF padding. build must reproduce it exactly.
+        block = bytes([1, 0, 2, 0x10, 0x25, 0x7F])
+        ram = b"\x55" * 4 + block + b"\x66" * 6
+        expected = make_save(block, size=16)
+        self.assertEqual(save_file.build(ram, 4, 6, 16, "sum16-not-le"), expected)
+        with self.assertRaises(ValueError):
+            save_file.build(ram, 4, 6, 7, "sum16-not-le")  # no room for the checksum
+        with tempfile.TemporaryDirectory() as d:
+            src, dst = os.path.join(d, "ram.bin"), os.path.join(d, "out.sav")
+            with open(src, "wb") as f:
+                f.write(ram)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(save_file.main(["build", src, dst, "--block", "4", "6", "--size", "16",
+                                                 "--checksum", "sum16-not-le", "--set-bit", "1.0"]), 0)
+            with open(dst, "rb") as f:
+                out = f.read()
+            self.assertEqual(out[1], 1)
+            self.assertIn("sum16-not-le", save_file.identify(out, 0, 6, 6))
+
     def test_cli_refuses_to_overwrite_the_input(self):
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "a.sav")
