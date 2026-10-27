@@ -741,9 +741,21 @@ local function cmd_frame_advance(p)
         return CAPS.framecount and emu.framecount() or nil
     end)
 end
+-- Defined in the breakpoint section below (which comes later in this file):
+-- re-registers every breakpoint's callbacks after the core is rebuilt.
+local rearm_all_breakpoints
+
+--- Hard-reset the core, then re-register every breakpoint: rebooting the core
+--- discards its memory callbacks, which would otherwise leave breakpoints
+--- listed but silent.
+--- @return table { rearmed = N, failed = {[id] = message} }; errors if
+---         client.reboot_core is missing.
+--- @requires BizHawk `client.reboot_core`; rearm_all_breakpoints.
 local function cmd_reset(p)
     if not CAPS.reboot_core then error("client.reboot_core not available") end
-    client.reboot_core(); return true
+    client.reboot_core()
+    local rearmed, failed = rearm_all_breakpoints()
+    return { rearmed = rearmed, failed = failed }
 end
 
 -- Set by cmd_close; the main loop calls client.exit() once the RESULT for the
@@ -844,6 +856,44 @@ local function breakpoint_summary(bp)
              dropped = bp.dropped, max_hits = bp.max_hits, label = bp.label }
 end
 
+--- Register a breakpoint's memory callbacks (one per address) with BizHawk.
+--- Memory callbacks belong to the emulator core, so they are lost when the
+--- core is rebuilt (client.reboot_core); cmd_reset calls this again for every
+--- breakpoint. Old callback ids are unregistered first, in case they survive.
+--- @return nil; errors (after unregistering any half-done registration)
+---         if a callback can't be registered.
+--- @requires BizHawk `event` callbacks (bp.register) and event.unregisterbyid.
+local function arm_breakpoint(bp)
+    for _, g in ipairs(bp.guids) do pcall(event.unregisterbyid, g) end
+    bp.guids = {}
+    local function on_hit(addr, val, flags)
+        pcall(record_hit, bp, addr, val, flags)
+    end
+    for a = bp.address, bp.address + bp.length - 1 do
+        local name = string.format("mcp-bizhawk bp %d %s %X", bp.id, bp.kind, a)
+        local ok, guid = pcall(event[bp.register], on_hit, a, name, bp.scope)
+        if not ok then
+            for _, g in ipairs(bp.guids) do pcall(event.unregisterbyid, g) end
+            bp.guids = {}
+            error("couldn't register the " .. bp.kind .. " callback at " .. string.format("0x%X", a) .. ": " .. tostring(guid))
+        end
+        bp.guids[#bp.guids + 1] = guid
+    end
+end
+
+--- Re-register the callbacks of every breakpoint (after client.reboot_core).
+--- @return number of breakpoints re-armed, and a table {[id] = message} of
+---         those that couldn't be (they stay listed, without callbacks).
+--- @requires BREAKPOINTS, arm_breakpoint.
+rearm_all_breakpoints = function()
+    local rearmed, failed = 0, {}
+    for id, bp in pairs(BREAKPOINTS) do
+        local ok, err = pcall(arm_breakpoint, bp)
+        if ok then rearmed = rearmed + 1 else failed[tostring(id)] = tostring(err) end
+    end
+    return rearmed, failed
+end
+
 local function cmd_add_breakpoint(p)
     local kind = assert(p.kind, "kind required: 'read', 'write', or 'exec'")
     local register = BREAKPOINT_KINDS[kind]
@@ -872,23 +922,12 @@ local function cmd_add_breakpoint(p)
         end
     end
     local bp = {
-        id = next_breakpoint_id, kind = kind, address = address, length = length, scope = p.scope,
-        pause_on_hit = p.pause_on_hit == true, max_hits = max_hits, label = p.label,
+        id = next_breakpoint_id, kind = kind, register = register, address = address, length = length,
+        scope = p.scope, pause_on_hit = p.pause_on_hit == true, max_hits = max_hits, label = p.label,
         stack_depth = math.max(0, math.min(p.stack_depth or 4, 16)), stack_domain = stack_domain,
         capture = p.capture, hits = {}, hit_count = 0, dropped = 0, guids = {},
     }
-    local function on_hit(addr, val, flags)
-        pcall(record_hit, bp, addr, val, flags)
-    end
-    for a = address, address + length - 1 do
-        local name = string.format("mcp-bizhawk bp %d %s %X", bp.id, kind, a)
-        local ok, guid = pcall(event[register], on_hit, a, name, p.scope)
-        if not ok then
-            for _, g in ipairs(bp.guids) do pcall(event.unregisterbyid, g) end
-            error("couldn't register the " .. kind .. " callback at " .. string.format("0x%X", a) .. ": " .. tostring(guid))
-        end
-        bp.guids[#bp.guids + 1] = guid
-    end
+    arm_breakpoint(bp)
     next_breakpoint_id = next_breakpoint_id + 1
     BREAKPOINTS[bp.id] = bp
     return breakpoint_summary(bp)
