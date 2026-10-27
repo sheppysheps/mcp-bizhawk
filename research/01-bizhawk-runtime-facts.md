@@ -55,4 +55,5 @@ what was run.
 - `emu.frameadvance()` blocks while paused; the bridge uses `emu.yield()` then (fixed upstream-of-fork in `fix/pause`).
 - Registers dumped at the end of a frame (LY = 144, vblank) may not be what was used while the screen was drawn: Shantae's title screen had LCDC = `0xE5` (sprites off) at frame end with 34 sprites visible.
 - Gambatte memory callbacks: read/write/exec all fire; **the written value is reported as 0** (take the value from register A). Registers include `ROMX BANK`, `WRAM BANK`, `SRAM BANK`, `VRAM BANK`. (From the Shando session's notes.)
+- **A write callback's PC is the instruction after the store**, not the store itself: a one-byte store at `X` is reported as `X+1`. Read the disassembly just before the reported PC to find the writer, and don't treat the reported address as a routine entry. (Confirmed 2026-10-27: a live write watch reported a PC one byte past a single-byte store that static disassembly found.)
 - `client.screenshot()` of a GBC game is exactly **160x144**, RGB, in BizHawk's displayed colors (after any GBC color correction).
