@@ -7,15 +7,16 @@ import { TOOLS, registerTools, describeEval } from "../../dist/tools.js";
 
 /**
  * Register the tools against stand-ins and return the two request handlers.
+ * `reply` is what the fake bridge answers every call with (default `{}`).
  * @returns `{ list(), call(name, args), calls }`; `calls` records every bridge method sent.
  * @requires dist/tools.js (run `npm run build` first).
  */
-function harness(opts = { evalLua: false }) {
+function harness(opts = { evalLua: false }, reply = {}) {
   const handlers = new Map();
   const server = { setRequestHandler: (schema, fn) => handlers.set(schema, fn) };
   const calls = [];
   const backend = {
-    call: async (method, params) => { calls.push({ method, params }); return {}; },
+    call: async (method, params) => { calls.push({ method, params }); return reply; },
     launch: async (rom) => { calls.push({ method: "launch", params: { rom } }); return "Launched"; },
     close: async () => { calls.push({ method: "close" }); return "Closed"; },
     status: async () => ({ mode: "hub", listening: true, connected: false, bridgeReady: false, bizhawkPort: 8766, hubPid: 1, hubBuild: "b", hubUptimeSeconds: 2, sessions: 1 }),
@@ -120,6 +121,14 @@ test("describeCompare and describeSnapshotList accept json.lua's {} for empty li
   assert.match(list, /No snapshots\./);
   assert.match(list, /No candidate sets\./);
   assert.match(list, /0 KiB of 64\.0 MiB/);
+});
+
+test("play_input_sequence accepts json.lua's {} for an empty observation list", async () => {
+  // A sequence without screenshots or memory reads comes back with
+  // observations = {} (json.lua can't tell an empty array from an empty object).
+  const h = harness({ evalLua: false }, { played: 1, final_framecount: 10, observations: {} });
+  const res = await h.call("bizhawk_play_input_sequence", { frames: [{ buttons: {} }] });
+  assert.match(res.content[0].text, /^Played 1 frames\. Final framecount: 10\.\nCaptured 0 observations\./);
 });
 
 test("malformed arguments are rejected before reaching the bridge", async () => {

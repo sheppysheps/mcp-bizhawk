@@ -1221,7 +1221,9 @@ export function registerTools(server: Server, backend: Backend & { notice?(): st
           }[];
         }>("play_input_sequence", params);
 
-        const obs = r.observations ?? [];
+        // json.lua encodes an empty Lua table as {}, so a sequence with no
+        // observations arrives as an object, not an array.
+        const obs = Array.isArray(r.observations) ? r.observations : [];
         const lines = [
           `Played ${r.played} frames. Final framecount: ${r.final_framecount ?? "(unavailable)"}.`,
         ];
