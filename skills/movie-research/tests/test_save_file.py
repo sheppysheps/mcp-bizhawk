@@ -60,6 +60,29 @@ class SaveFile(unittest.TestCase):
             self.assertEqual(out[1], 1)
             self.assertIn("sum16-not-le", save_file.identify(out, 0, 6, 6))
 
+    def test_build_into_a_second_slot_keeps_the_first(self):
+        block1, block2 = bytes([1, 2, 3, 4]), bytes([9, 8, 7, 6])
+        first = save_file.build(block1, 0, 4, 32, "sum16-not-le")
+        both = save_file.build(b"\0\0" + block2, 2, 4, 32, "sum16-not-le", slot=16, base=first)
+        self.assertEqual(both[:6], first[:6])
+        self.assertEqual(both[16:20], block2)
+        self.assertEqual(save_file.identify(both[16:], 0, 4, 4)[0], "sum16-not-le")
+        with tempfile.TemporaryDirectory() as d:
+            ram, base, out = (os.path.join(d, n) for n in ("ram.bin", "base.sav", "out.sav"))
+            with open(ram, "wb") as f:
+                f.write(block2)
+            with open(base, "wb") as f:
+                f.write(first)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(save_file.main(["build", ram, out, "--block", "0", "4", "--size", "32", "--slot",
+                                                 "16", "--into", base, "--checksum", "sum16-not-le",
+                                                 "--set", "0=0x55"]), 0)
+            with open(out, "rb") as f:
+                data = f.read()
+            # --set offsets are into the slot: offset 0 of slot 2 is file offset 16.
+            self.assertEqual((data[:6], data[16]), (first[:6], 0x55))
+            self.assertEqual(save_file.identify(data[16:], 0, 4, 4)[0], "sum16-not-le")
+
     def test_cli_refuses_to_overwrite_the_input(self):
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "a.sav")

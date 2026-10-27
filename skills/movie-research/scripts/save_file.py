@@ -8,7 +8,7 @@
                                                        edit bytes or bits and fix
                                                        the checksum
   build <ram.bin> <out.bin> --block OFFSET LENGTH --size BYTES --checksum NAME
-        [--pad 0xFF] [--set ...] [--set-bit ...] [--clear-bit ...]
+        [--pad 0xFF] [--slot OFFSET] [--into SAVE] [--set ...] [--set-bit ...] [--clear-bit ...]
                                                        a new save from the live copy
                                                        of the save data in a RAM
                                                        snapshot (any moment of a
@@ -98,13 +98,15 @@ def patch(save, start, end, at, formula, sets=(), set_bits=(), clear_bits=()):
     return bytes(out)
 
 
-def build(ram, offset, length, size, formula, pad=0xFF):
+def build(ram, offset, length, size, formula, pad=0xFF, slot=0, base=None):
     """A save image from the live copy of the save data in a RAM snapshot.
 
     Many games keep the saved state as one block in work RAM and copy it to
     cart RAM, followed by a checksum, when the player saves (find the block
-    with movie_export locate). This copies ram[offset:offset+length] to the
-    start of a `size`-byte image, appends the checksum and pads the rest.
+    with movie_export locate). This copies ram[offset:offset+length] to
+    `slot` (the slot's offset in the save file) of a `size`-byte image,
+    appends the checksum, and fills the rest with `pad`, or keeps `base`
+    (an existing save image, so other slots survive).
     Returns: bytes of length `size`. Raises ValueError when it doesn't fit.
     Requires: nothing.
     """
@@ -112,9 +114,11 @@ def build(ram, offset, length, size, formula, pad=0xFF):
     if len(block) != length:
         raise ValueError(f"the RAM snapshot has only {len(block)} bytes at 0x{offset:X}, not {length}")
     cs = checksum_bytes(formula, block)
-    if length + len(cs) > size:
-        raise ValueError(f"block and checksum ({length + len(cs)} bytes) don't fit in {size}")
-    return (block + cs).ljust(size, bytes([pad]))
+    if slot + length + len(cs) > size:
+        raise ValueError(f"block and checksum ({length + len(cs)} bytes) at 0x{slot:X} don't fit in {size}")
+    out = bytearray(base[:size].ljust(size, bytes([pad])) if base is not None else bytes([pad]) * size)
+    out[slot:slot + length + len(cs)] = block + cs
+    return bytes(out)
 
 
 def _check(off, start, end):
@@ -157,6 +161,9 @@ def main(argv=None):
                            help="where the save data sits in the RAM snapshot, e.g. 0x0A70 0xCC")
             s.add_argument("--size", required=True, help="size of the save file, e.g. 0x2000")
             s.add_argument("--pad", default="0xFF", help="filler after the checksum (default 0xFF)")
+            s.add_argument("--slot", default="0", help="offset of the save slot in the file (default 0)")
+            s.add_argument("--into", metavar="SAVE", help="an existing save file to write the slot into, keeping "
+                                                          "its other slots (default: a new, padded file)")
         else:
             s.add_argument("--data", nargs=2, required=True, metavar=("START", "END"),
                            help="the checksummed bytes, END exclusive, e.g. 0 0xCC")
@@ -165,10 +172,17 @@ def main(argv=None):
     with open(args.save, "rb") as f:
         save = f.read()
     if args.cmd == "build":
-        off, length = int(args.block[0], 0), int(args.block[1], 0)
+        off, length, slot = int(args.block[0], 0), int(args.block[1], 0), int(args.slot, 0)
+        base = None
+        if args.into:
+            with open(args.into, "rb") as f:
+                base = f.read()
         try:
-            out = build(save, off, length, int(args.size, 0), args.checksum, int(args.pad, 0))
-            out = patch(out, 0, length, length, args.checksum, args.set, args.set_bit, args.clear_bit)
+            out = build(save, off, length, int(args.size, 0), args.checksum, int(args.pad, 0), slot, base)
+            # --set and friends take offsets into the slot, so shift them by its start.
+            shift = lambda pairs: [(o + slot, v) for o, v in pairs]  # noqa: E731
+            out = patch(out, slot, slot + length, slot + length, args.checksum, shift(args.set),
+                        shift(args.set_bit), shift(args.clear_bit))
         except ValueError as err:
             print(err)
             return 1
@@ -177,8 +191,8 @@ def main(argv=None):
             return 1
         with open(args.out, "wb") as f:
             f.write(out)
-        print(f"wrote {args.out}: {length} bytes of save data from 0x{off:X}, checksum "
-              f"{checksum_bytes(args.checksum, out[:length]).hex()}, {len(out)} bytes in all")
+        print(f"wrote {args.out}: {length} bytes of save data from 0x{off:X} into the slot at 0x{slot:X}, "
+              f"checksum {checksum_bytes(args.checksum, out[slot:slot + length]).hex()}, {len(out)} bytes in all")
         return 0
     start, end, at = int(args.data[0], 0), int(args.data[1], 0), int(args.at, 0)
     if args.cmd == "identify":
