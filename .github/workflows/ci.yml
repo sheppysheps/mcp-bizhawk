@@ -81,6 +81,14 @@ jobs:
       - name: movie-research unit tests (standard library only)
         run: python3 -m unittest discover -s skills/movie-research/tests -v
 
+      # The schema tests skip without jsonschema; install it (pinned, dev only)
+      # in a throwaway venv so they run here, without touching the system Python.
+      - name: schema tests (findings/1, catalog/1)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/schema-venv"
+          "$RUNNER_TEMP/schema-venv/bin/pip" install --quiet jsonschema==4.26.0
+          "$RUNNER_TEMP/schema-venv/bin/python" -m unittest skills/movie-research/tests/test_schemas.py -v
+
   ci-ok:
     name: ci-ok
     needs: [build, lua, skills]

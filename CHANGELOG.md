@@ -187,6 +187,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **findings/1 evidence has a static shape** (dashboard ADR 0003, decision of
+  2026-10-26). An evidence entry is exactly one of a capture entry
+  (`capture`, `frames`, `method`, optional `writers`/`note`) or a static entry
+  for facts read from the ROM (`source: "rom"`, `method` starting
+  `static: `, optional `rom_sha1`, `at` as `BB:AAAA`, `note`). Both reject
+  unknown keys, so mixed entries and typos fail. The format string stays
+  `findings/1`; existing catalogs still validate. New
+  `skills/movie-research/tests/test_schemas.py`, run in CI with a pinned
+  `jsonschema`. The catalog/1 requirement fields gained descriptions.
 - **Game data lives in the asset store.** The tile-graphics evals read their
   inputs from `$CLAUDEWORK_ASSETS/dumps/tile-graphics-inputs/` (`grade.py`
   falls back to `<workspace>/inputs` when the variable is unset). Movie

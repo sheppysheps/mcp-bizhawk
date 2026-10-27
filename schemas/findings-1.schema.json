@@ -39,8 +39,13 @@
       ]
     },
     "evidence": {
+      "description": "Exactly one of: a capture entry (seen while a recording or live session ran) or a static entry (read from the ROM without running it). ADR 0003, decision of 2026-10-26.",
+      "oneOf": [{"$ref": "#/$defs/capture_evidence"}, {"$ref": "#/$defs/static_evidence"}]
+    },
+    "capture_evidence": {
       "type": "object",
       "required": ["capture", "frames", "method"],
+      "additionalProperties": false,
       "properties": {
         "capture": {"type": "string"},
         "frames": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2,
@@ -48,6 +53,19 @@
         "writers": {"type": "array", "items": {"type": "object", "required": ["pc", "bank"],
           "properties": {"pc": {"type": "string", "pattern": "^0x[0-9A-Fa-f]+$"}, "bank": {"$ref": "#/$defs/bank"}}}},
         "method": {"type": "string"},
+        "note": {"type": "string"}
+      }
+    },
+    "static_evidence": {
+      "type": "object",
+      "required": ["source", "method"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"const": "rom"},
+        "method": {"type": "string", "pattern": "^static: ", "description": "Starts with \"static: \", e.g. \"static: disassembly of the caller\""},
+        "rom_sha1": {"type": "string", "pattern": "^[0-9A-Fa-f]{40}$",
+                     "description": "Defaults to the enclosing finding's rom_sha1; set it inside a catalog or when reading a different ROM"},
+        "at": {"type": "string", "pattern": "^[0-9A-Fa-f]{2}:[0-9A-Fa-f]{4}$", "description": "Where in the ROM it was read, BB:AAAA"},
         "note": {"type": "string"}
       }
     }
