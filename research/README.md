@@ -13,9 +13,10 @@ each stays focused:
   RAM and ROM catalogs, text and graphics extraction, and decompilation.
 
 Shantae is simply the ROM chosen for testing these tools, out of convenience.
-Nothing here is Shantae-specific except the observations in
-[05-shantae-test-target-notes.md](05-shantae-test-target-notes.md), which are
-leads for the game-specific projects.
+Nothing here is Shantae-specific: what testing found about the game went to
+the game projects, and
+[05-test-target-lessons.md](05-test-target-lessons.md) keeps only the
+lessons that apply to any game.
 
 These notes record what was learned while building the fork, for humans and
 coding agents who want to pull or fork this work and build their own tools.
@@ -31,7 +32,7 @@ for GB/GBC).
 | [02-architecture-and-decisions.md](02-architecture-and-decisions.md) | Why the fork is built the way it is: the hub, the sandbox, consent, file fencing, workflow rules |
 | [03-security-review.md](03-security-review.md) | Threat model, the sandbox escape suite, security review findings, third-party tool audits |
 | [04-tooling-ecosystem.md](04-tooling-ecosystem.md) | REA, Ghidra + GhidraBoy, GhidraMCP, uv, gh: what works, what doesn't, how they're configured |
-| [05-shantae-test-target-notes.md](05-shantae-test-target-notes.md) | Observations about Shantae made while testing tools. Leads for the Shando session, not a game catalog |
+| [05-test-target-lessons.md](05-test-target-lessons.md) | Game-agnostic lessons from testing the tools on a real game: in-frame register values, control runs, counter narrowing, far-call trampolines |
 | [06-tile-graphics-skill-eval.md](06-tile-graphics-skill-eval.md) | skill-creator evaluation of the tile-graphics skill: method, results, failures, planned fixes |
 | [07-open-questions-and-roadmap.md](07-open-questions-and-roadmap.md) | What's next, what's unresolved, and known tech debt |
 
