@@ -36,8 +36,8 @@ status=0
 while IFS= read -r -d '' path; do
     lower=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
     case "$lower" in
-        *.gb|*.gbc|*.gba|*.rom|*.nes|*.sfc|*.smc|*.z64|*.n64|*.iso|*.bk2|*.tasproj|*.state|*.sav|*.srm|*bios*|*/firmware/*|firmware/*)
-            echo "guard-assets: refusing '$path' (ROM, firmware, movie or savestate by name)" >&2
+        *.gb|*.gbc|*.gba|*.rom|*.nes|*.sfc|*.smc|*.z64|*.n64|*.iso|*.bk2|*.tasproj|*.state|*.sav|*.srm|*.saveram|*bios*|*/firmware/*|firmware/*)
+            echo "guard-assets: refusing '$path' (ROM, firmware, movie, save or savestate by name)" >&2
             status=1
             continue ;;
     esac
