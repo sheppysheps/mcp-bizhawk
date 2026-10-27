@@ -140,6 +140,14 @@ test("reset reports re-armed breakpoints, and works with older bridges", async (
   assert.equal(res.content[0].text, "Core reset");
 });
 
+test("frame_advance reports a breakpoint that stopped it early", async () => {
+  let res = await harness({ evalLua: false }, 105).call("bizhawk_frame_advance", { count: 5 });
+  assert.equal(res.content[0].text, "Advanced 5 frame(s). Framecount: 105");
+  res = await harness({ evalLua: false }, { framecount: 101, advanced: 1, paused_by_breakpoint: 3 })
+    .call("bizhawk_frame_advance", { count: 5 });
+  assert.equal(res.content[0].text, "Advanced 1 of 5 frame(s): breakpoint #3 paused emulation. Framecount: 101");
+});
+
 test("malformed arguments are rejected before reaching the bridge", async () => {
   const h = harness();
   await assert.rejects(h.call("bizhawk_play_input_sequence", { frames: [{ Start: true }] }),

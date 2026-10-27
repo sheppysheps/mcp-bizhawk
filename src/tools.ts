@@ -738,8 +738,8 @@ export const TOOLS: Tool[] = [
     description:
       "PURPOSE: Step emulation by exactly N frames (default 1) and return the new framecount. " +
       "USAGE: Use for frame-precise input automation (combine with bizhawk_press_buttons), animation inspection, or letting the system initialize after a hard reset (RAM is mostly zero in the first ~30 frames after bizhawk_reset). For long jumps (thousands of frames) prefer bizhawk_save_state / bizhawk_load_state of a pre-prepared state — frame_advance scales linearly. Works whether emulation is currently paused or running and does NOT change the pause state (from a pause it steps exactly N frames and stays paused). " +
-      "BEHAVIOR: Advances the game-logic clock by N frames. Each step costs roughly one real frame (~16ms at 60Hz) plus one bridge round-trip — so advancing 600 frames takes ~10 seconds wall-clock. Returns an error if the loaded core doesn't expose emu.frameadvance. " +
-      "RETURNS: Single line 'Advanced N frame(s). Framecount: NEW_COUNT'.",
+      "BEHAVIOR: Advances the game-logic clock by N frames. Each step costs roughly one real frame (~16ms at 60Hz) plus one bridge round-trip — so advancing 600 frames takes ~10 seconds wall-clock. Returns an error if the loaded core doesn't expose emu.frameadvance. If a pause_on_hit breakpoint fires, stepping stops at the end of that frame and emulation stays paused. " +
+      "RETURNS: Single line 'Advanced N frame(s). Framecount: NEW_COUNT', or 'Advanced K of N frame(s): breakpoint #ID paused emulation. Framecount: NEW_COUNT' when a breakpoint stopped it early.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1322,8 +1322,14 @@ export function registerTools(server: Server, backend: Backend & { notice?(): st
         return ok(text);
       }
       case "bizhawk_frame_advance": {
-        const f = await backend.call<number>("frame_advance", { count: p.count ?? 1 });
-        return ok(`Advanced ${p.count ?? 1} frame(s). Framecount: ${f}`);
+        // A plain number, or an object when a pause_on_hit breakpoint stopped
+        // the steps early (older bridges only ever send the number).
+        const r = await backend.call<number | { framecount: number; advanced: number; paused_by_breakpoint: number }>(
+          "frame_advance", { count: p.count ?? 1 });
+        if (r !== null && typeof r === "object") {
+          return ok(`Advanced ${r.advanced} of ${p.count ?? 1} frame(s): breakpoint #${r.paused_by_breakpoint} paused emulation. Framecount: ${r.framecount}`);
+        }
+        return ok(`Advanced ${p.count ?? 1} frame(s). Framecount: ${r}`);
       }
 
       case "bizhawk_screenshot": {
