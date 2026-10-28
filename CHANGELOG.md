@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Grid map register (`grid_map.py`, plan item A10).** Reads a map drawn on
+  a grid of squares into cells, rooms and doors (edges classed by a
+  per-map legend; dark-pixel runs tell door dashes from dotted grid lines,
+  at any line thickness; bars that join rooms across a gap become
+  bridges), then lines it up with a capture's labeled transitions:
+  each labeled place gets a map room so every move crosses a fitting door.
+  Maps can be wrong, so it reports the fewest disagreements it needs
+  (moves with no door, places sharing a room) in `mismatches.md`, with
+  rooms the capture never entered, borderline edges and bridges to
+  confirm; a person settles them in a corrections file. Also writes
+  `grid.json`, `result.json` and `overlay.png`.
+
 - **Catalog format `catalog/1` and schemas.** `movie_export catalog`
   writes rooms, transitions and pickups in the format agreed across the
   repos: places keep a stable id when renamed, transitions refer to them
