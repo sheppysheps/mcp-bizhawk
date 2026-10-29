@@ -203,7 +203,7 @@ class GridMapTests(unittest.TestCase):
         self.assertRegex(md, r"- \[ \] .*`p-extra`")
 
     def test_corrections_override_edges_and_report_typos(self):
-        corr = {"anchors": {"p-lobby": "a1"}, "edges": {"a1|a2": {"class": "door"}, "a9|a10": {"class": "open"}}}
+        corr = {"anchors": {"p-lobby": "a1"}, "edges": {"a2|a1": {"class": "door"}, "a9|a10": {"class": "open"}}}
         cfg = grid_map.load_config(self.build(corrections=corr))
         grid = grid_map.Grid(cfg)
         classes, unknown = grid_map.apply_corrections(grid, grid_map.load_corrections(cfg))

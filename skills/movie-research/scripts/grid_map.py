@@ -440,8 +440,11 @@ def apply_corrections(grid, corr):
         classes[(br["a"], br["b"])] = grid.cfg.get("bridge", {}).get("class", "bridge")
     unknown = []
     for name, fix in corr["edges"].items():
-        if name in by_name:
-            classes[by_name[name]] = fix["class"]
+        # people write either cell first ("h10|g10" or "g10|h10")
+        sep = "~" if "~" in name else "|"
+        key = name if name in by_name else sep.join(reversed(name.split(sep)))
+        if key in by_name:
+            classes[by_name[key]] = fix["class"]
         else:
             unknown.append(name)
     return classes, unknown
@@ -712,7 +715,7 @@ def mismatches(cfg, grid, classes, rooms, unknown_fixes, moves, used, sols, corr
           "Edge readings close to a rule's threshold, and every edge of a class the config lists in "
           "`review_classes` (for example one-ways, which can also be fades)."]
     review = set(cfg.get("review_classes", ["oneway"]))
-    fixed = set(corr["edges"])
+    fixed = {n for name in corr["edges"] for n in (name, "|".join(reversed(name.split("|"))))}
     rows = []
     for (a, b), e in sorted(grid.edges.items()):
         n = edge_name(cfg, a, b)
@@ -786,7 +789,10 @@ def main(argv=None):
     with open(os.path.join(out, "grid.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(grid.to_json(), f, indent=1)
         f.write("\n")
-    write_overlay(grid, rooms, os.path.join(out, "overlay.png"))
+    try:
+        write_overlay(grid, rooms, os.path.join(out, "overlay.png"))
+    except OSError as e:  # e.g. the old overlay is open in an image viewer on Windows
+        print(f"warning: overlay.png not written ({e}); close it in other programs and run again")
     print(f"read {len(grid.room)} room cells, {len(grid.edges)} edges, {len(rooms)} rooms -> {out}")
     if a.cmd == "align":
         moves = load_moves(cfg, corr)
