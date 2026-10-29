@@ -441,12 +441,15 @@ def apply_corrections(grid, corr):
         by_name[br["name"]] = (br["a"], br["b"])
         classes[(br["a"], br["b"])] = grid.cfg.get("bridge", {}).get("class", "bridge")
     unknown = []
+    grid.locked = set()  # edges a correction marks "key": true (a door that is also key-locked)
     for name, fix in corr["edges"].items():
         # people write either cell first ("h10|g10" or "g10|h10")
         sep = "~" if "~" in name else "|"
         key = name if name in by_name else sep.join(reversed(name.split(sep)))
         if key in by_name:
             classes[by_name[key]] = fix["class"]
+            if fix.get("key"):
+                grid.locked.add(by_name[key])
         else:
             unknown.append(name)
     return classes, unknown
@@ -568,8 +571,9 @@ class Aligner:
                 continue
             if k in self.transition:
                 s = "E" if b[0] > a[0] else ("W" if b[0] < a[0] else ("S" if b[1] > a[1] else "N"))
-                self.links.setdefault((ra, rb), []).append((s, a, b))
-                self.links.setdefault((rb, ra), []).append((OPPOSITE[s], b, a))
+                locked = (a, b) in getattr(grid, "locked", set())
+                self.links.setdefault((ra, rb), []).append((s, a, b, locked))
+                self.links.setdefault((rb, ra), []).append((OPPOSITE[s], b, a, locked))
         # An anchor is one cell or a space-separated list of cells; every listed
         # cell must be a room cell, and all of them in the same map room.
         names = {cell_name(cfg, *c): c for c in grid.room}
@@ -591,11 +595,13 @@ class Aligner:
 
         Returns: list of edge names (empty when none fits).
         """
-        if self.key_word in (t.get("requires") or []) and not ({A, B} & self.key_rooms):
-            return []
+        # a key move needs a key door: inside either room, or on the door itself
+        keyed = self.key_word in (t.get("requires") or []) and not ({A, B} & self.key_rooms)
         want_x, want_n = sides(self.words, t.get("exit_door")), sides(self.words, t.get("entry_door"))
         out = []
-        for side, ca, cb in self.links.get((A, B), []):
+        for side, ca, cb, locked in self.links.get((A, B), []):
+            if keyed and not locked:
+                continue
             if want_x and not want_x & ({side} | position(self.rooms, A, ca)):
                 continue
             if want_n and not want_n & ({OPPOSITE[side]} | position(self.rooms, B, cb)):
@@ -741,8 +747,8 @@ def mismatches(cfg, grid, classes, rooms, unknown_fixes, moves, used, sols, corr
     L += ["## Bridges to explain", "",
           "Bars that join two room cells across a gap. The aligner treats them as passages between rooms; "
           "say what each really is (a passage, a one-way, a magnet path...) or mark it \"wall\" to drop it."]
-    L += [f"- [ ] {b['name']}" + (" (corrected)" if b["name"] in corr["edges"] else "")
-          for b in grid.bridges] or ["None."]
+    answered = {n for name in corr["edges"] for n in (name, "~".join(reversed(name.split("~"))))}
+    L += [f"- [ ] {b['name']}" for b in grid.bridges if b["name"] not in answered] or ["None."]
     L.append("")
     flag = cfg.get("review_markers", [])
     marks = [(cell_name(cfg, *c), m) for c, ms in sorted(grid.markers.items(), key=lambda t: (t[0][1], t[0][0]))

@@ -195,6 +195,14 @@ class GridMapTests(unittest.TestCase):
         self.assertEqual(result["unexplained_moves"], 1)
         self.assertIn("frame 40: `p-south` -> `p-far`", md)
 
+    def test_a_corrected_door_can_carry_the_key(self):
+        # the bridge b1~b3 is itself key-locked: the key move through it is explained
+        moves = MOVES[:3] + [(40, "p-south", "p-far", "east", ["key"])]
+        corr = {"anchors": {"p-lobby": "a1"}, "edges": {"b1~b3": {"class": "bridge", "key": True}}}
+        result, md = self.run_align(self.build(moves, corrections=corr))
+        self.assertEqual(result["unexplained_moves"], 0)
+        self.assertNotIn("- [ ] b1~b3", md)
+
     def test_an_ignored_move_leaves_the_alignment(self):
         # the same key move as above, now marked as a glitch: nothing left to explain
         moves = MOVES[:3] + [(40, "p-south", "p-far", "east", ["key"])]
