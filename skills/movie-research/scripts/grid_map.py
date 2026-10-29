@@ -570,12 +570,21 @@ class Aligner:
                 s = "E" if b[0] > a[0] else ("W" if b[0] < a[0] else ("S" if b[1] > a[1] else "N"))
                 self.links.setdefault((ra, rb), []).append((s, a, b))
                 self.links.setdefault((rb, ra), []).append((OPPOSITE[s], b, a))
+        # An anchor is one cell or a space-separated list of cells; every listed
+        # cell must be a room cell, and all of them in the same map room.
         names = {cell_name(cfg, *c): c for c in grid.room}
         self.anchors = {}
-        for place, cell in corr.get("anchors", {}).items():
-            if cell not in names:
-                raise SystemExit(f"anchor {place}: no room cell named {cell}")
-            self.anchors[place] = room_of[names[cell]]
+        for place, cells in corr.get("anchors", {}).items():
+            listed = cells.split()
+            missing = [c for c in listed if c not in names]
+            if not listed or missing:
+                raise SystemExit(f"anchor {place}: no room cell named {' '.join(missing) or repr(cells)}")
+            found = {room_of[names[c]] for c in listed}
+            if len(found) > 1:
+                parts = "; ".join(room_label(cfg, rooms[r]) for r in sorted(found))
+                raise SystemExit(f"anchor {place}: its cells fall in {len(found)} map rooms ({parts}); "
+                                 "a fade between them may be missing from the map, or a cell is wrong")
+            self.anchors[place] = found.pop()
 
     def doors(self, t, A, B):
         """The map doors between rooms A and B that fit move t.

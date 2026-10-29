@@ -224,6 +224,13 @@ class GridMapTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_align(path)
 
+    def test_anchor_may_list_a_rooms_cells_but_not_two_rooms(self):
+        result, _ = self.run_align(self.build(corrections={"anchors": {"p-lobby": "a1 a2"}}))
+        self.assertEqual(result["places"]["p-lobby"]["cells"], ["a1", "a2"])
+        path = self.build(corrections={"anchors": {"p-lobby": "a2 a3"}})
+        with self.assertRaisesRegex(SystemExit, "2 map rooms"):
+            self.run_align(path)
+
     def test_refine_finds_the_grid_from_a_rough_guess(self):
         image = os.path.join(self.dir, "map.png")
         draw_map(image)
