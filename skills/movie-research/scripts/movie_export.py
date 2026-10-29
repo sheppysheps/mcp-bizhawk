@@ -616,6 +616,9 @@ def cmd_video(args):
 
 
 NOT_TRANSITIONS = {"not a transition", "menu", ""}
+# The player really arrived, but not through a door (a glitch through a wall,
+# a corrupted warp): the visit counts, no transition is written.
+NOT_DOORS = {"glitch"}
 
 
 def region_of(place):
@@ -688,7 +691,8 @@ def catalog(rows, labels, capture="", bank_note="BizHawk 1.x does not report the
     a stable id (assign_place_ids); the watched values seen on arrival are
     evidence, not identity, and a value seen in more than one place is listed
     as a conflict. Transitions are directed, from the previous labeled place
-    to this one, merged when kind, doors, methods and requirements agree.
+    to this one, merged when kind, doors, methods and requirements agree;
+    a NOT_DOORS kind ("glitch") records the visit but writes no transition.
     Requirements are lists of the labeler's vocabulary names: [] means none,
     None means unknown. Evidence follows the findings shape.
     Returns: dict {"rooms", "doors", "items"} of JSON-ready dicts.
@@ -717,7 +721,7 @@ def catalog(rows, labels, capture="", bank_note="BizHawk 1.x does not report the
         for source, value in values.items():
             p["observed"].setdefault(f"{source}:{value}", []).append(frame)
             value_ids.setdefault(f"{source}:{value}", set()).add(pid)
-        if prev is not None and prev != pid:
+        if prev is not None and prev != pid and kind not in NOT_DOORS:
             info = {f: (lab.get(f) or "").strip() for f in ("exit_door", "entry_door", "exit", "entry")}
             reqs = {f: requirement_list(lab.get(f)) for f in ("requires", "requires_back", "leave_requires")}
             dkey = (prev, pid, kind) + tuple(info.values()) + tuple(

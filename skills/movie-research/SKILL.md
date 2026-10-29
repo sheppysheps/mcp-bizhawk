@@ -65,6 +65,8 @@ python movie_export.py video   <out> --out run.mp4 --audio dump.wav   # MP4 with
 
 Add `--json <file>` to keep a full result. Long lists are truncated on screen with a count of what was left out.
 
+In `catalog`, a label of kind "not a transition" or "menu" is skipped, and one of kind "glitch" (a clip through a wall, a corrupted warp) counts the visit but writes no door, so the next move still starts from the right place.
+
 **`compare` is the sync oracle.** Record the same movie on two emulators (or two versions), then compare:
 
 - *first input difference* means they aren't the same movie or frame offset; fix that first.

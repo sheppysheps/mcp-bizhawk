@@ -380,6 +380,17 @@ class Export(unittest.TestCase):
         self.assertEqual(movie_export.region_of("Swamp"), "Swamp")
         self.validate(out)
 
+    def test_catalog_glitch_counts_the_visit_but_writes_no_door(self):
+        rows = [{"frame": f, "lag": 0, "guess": "instant", "changes": []} for f in (100, 200, 300)]
+        labels = {"events": {"100": {"kind": "door", "arrival": "A1: Roof", "requires": "none"},
+                             "200": {"kind": "glitch", "arrival": "A2: Boss", "requires": "key"},
+                             "300": {"kind": "door", "arrival": "Field", "requires": "none"}}}
+        out = movie_export.catalog(rows, labels, capture="x")
+        self.assertEqual([p["id"] for p in out["rooms"]["places"]], ["a1-roof", "a2-boss", "field"])
+        # No A1 -> A2 door, and the next move still starts from A2, not A1.
+        self.assertEqual([(d["from"], d["to"]) for d in out["doors"]["transitions"]], [("a2-boss", "field")])
+        self.validate(out)
+
     def validate(self, out):
         """Check catalog output against schemas/catalog-1.schema.json when jsonschema is installed."""
         try:

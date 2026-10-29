@@ -199,6 +199,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`movie_export catalog`: a "glitch" label is a visit, not a door.** The
+  player really arrived (a clip through a wall, a corrupted warp), so the
+  place and its visit stay and the next move starts from it, but no
+  transition is written: a glitch is not a door a randomizer may use.
+  Glitch labels used to become transitions of kind "glitch".
+
 - **findings/1 evidence has a static shape** (dashboard ADR 0003, decision of
   2026-10-26). An evidence entry is exactly one of a capture entry
   (`capture`, `frames`, `method`, optional `writers`/`note`) or a static entry
