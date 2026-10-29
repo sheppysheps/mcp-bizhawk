@@ -195,6 +195,14 @@ class GridMapTests(unittest.TestCase):
         self.assertEqual(result["unexplained_moves"], 1)
         self.assertIn("frame 40: `p-south` -> `p-far`", md)
 
+    def test_an_ignored_move_leaves_the_alignment(self):
+        # the same key move as above, now marked as a glitch: nothing left to explain
+        moves = MOVES[:3] + [(40, "p-south", "p-far", "east", ["key"])]
+        corr = {"anchors": {"p-lobby": "a1"}, "moves": {"40": {"ignore": True, "note": "glitch"}}}
+        result, md = self.run_align(self.build(moves, corrections=corr))
+        self.assertEqual((result["unexplained_moves"], len(result["moves"])), (0, 3))
+        self.assertIn("- frame 40: glitch", md)
+
     def test_more_places_than_rooms_are_reported_as_shared(self):
         moves = MOVES + [(50, "p-far", "p-extra", "west", [])]
         result, md = self.run_align(self.build(moves))

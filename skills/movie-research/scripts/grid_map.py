@@ -71,11 +71,13 @@ def load_corrections(cfg):
     """Read the corrections file named in the config, if any.
 
     Returns: dict with "edges" {"a1|a2": {"class": ..., "note": ...}}, "merge"
-    {old place id: new place id}, "anchors" {place id: cell}, and "notes" (free text).
+    {old place id: new place id}, "anchors" {place id: cell}, "moves"
+    {frame: {"ignore": true, "note": ...}} (labeled moves that aren't doors,
+    such as glitches, left out of the alignment) and "notes" (free text).
     An absent file gives empty corrections.
     Requires: read access to the corrections file.
     """
-    out = {"edges": {}, "merge": {}, "anchors": {}, "notes": []}
+    out = {"edges": {}, "merge": {}, "anchors": {}, "moves": {}, "notes": []}
     path = cfg.get("corrections")
     if path and os.path.exists(path):
         with open(path, encoding="utf-8") as f:
@@ -493,6 +495,7 @@ def load_moves(cfg, corr):
     flt = cfg.get("places", {})
     prefix, ids, exclude = flt.get("prefix"), set(flt.get("ids", [])), set(flt.get("exclude", []))
     merge = corr.get("merge", {})
+    ignored = {int(f) for f, m in corr.get("moves", {}).items() if m.get("ignore")}
 
     def keep(p):
         return p not in exclude and ((prefix and p.startswith(prefix)) or p in ids)
@@ -502,7 +505,7 @@ def load_moves(cfg, corr):
         with open(c["doors"], encoding="utf-8") as f:
             for t in json.load(f)["transitions"]:
                 t = dict(t, **{k: merge.get(t[k], t[k]) for k in ("from", "to")})
-                if keep(t["from"]) and keep(t["to"]) and t["from"] != t["to"]:
+                if keep(t["from"]) and keep(t["to"]) and t["from"] != t["to"] and t["frames"][0] not in ignored:
                     moves.append(t)
     return sorted(moves, key=lambda t: t["frames"][0])
 
@@ -740,6 +743,9 @@ def mismatches(cfg, grid, classes, rooms, unknown_fixes, moves, used, sols, corr
     L.append("")
     if unknown_fixes:
         L += ["## Corrections that matched no edge", ""] + [f"- {n}" for n in unknown_fixes] + [""]
+    skipped = [(f, m) for f, m in sorted(corr.get("moves", {}).items(), key=lambda t: int(t[0])) if m.get("ignore")]
+    if skipped:
+        L += ["## Moves left out (corrections)", ""] + [f"- frame {f}: {m.get('note', '')}" for f, m in skipped] + [""]
     if corr.get("notes"):
         L += ["## Notes already settled", ""] + [f"- {n}" for n in corr["notes"]] + [""]
     return "\n".join(L)
