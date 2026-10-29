@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Grid map register (`grid_map.py`, plan item A10).** Reads a map drawn on
+  a grid of squares into cells, rooms and doors (edges classed by a
+  per-map legend; dark-pixel runs tell door dashes from dotted grid lines,
+  at any line thickness; bars that join rooms across a gap become
+  bridges), then lines it up with a capture's labeled transitions:
+  each labeled place gets a map room so every move crosses a fitting door.
+  Maps can be wrong, so it reports the fewest disagreements it needs
+  (moves with no door, places sharing a room) in `mismatches.md`, with
+  rooms the capture never entered, borderline edges and bridges to
+  confirm; a person settles them in a corrections file. Also writes
+  `grid.json`, `result.json` and `overlay.png`.
+
 - **Catalog format `catalog/1` and schemas.** `movie_export catalog`
   writes rooms, transitions and pickups in the format agreed across the
   repos: places keep a stable id when renamed, transitions refer to them
@@ -186,6 +198,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   breakpoints fire; registers include `ROMX BANK` / `WRAM BANK`.
 
 ### Changed
+
+- **`movie_export catalog`: a "glitch" label is a visit, not a door.** The
+  player really arrived (a clip through a wall, a corrupted warp), so the
+  place and its visit stay and the next move starts from it, but no
+  transition is written: a glitch is not a door a randomizer may use.
+  Glitch labels used to become transitions of kind "glitch".
 
 - **findings/1 evidence has a static shape** (dashboard ADR 0003, decision of
   2026-10-26). An evidence entry is exactly one of a capture entry
