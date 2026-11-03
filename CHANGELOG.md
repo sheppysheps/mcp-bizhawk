@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Grid map passages: direction and requirements as data.** An edge
+  correction can now carry `from` (the cell it's crossed from),
+  `requires` and `requires_back` (catalog/1 requirement lists: `[]` none,
+  absent unknown), so tools can read a one-way's direction and the abilities
+  a passage needs without parsing notes. `align` writes them to
+  `result.json` (`passages`), and `mismatches.md` lists corrected
+  one-ways with no `from` and any field mistakes, which are dropped
+  rather than guessed.
 - **Grid map register (`grid_map.py`, plan item A10).** Reads a map drawn on
   a grid of squares into cells, rooms and doors (edges classed by a
   per-map legend; dark-pixel runs tell door dashes from dotted grid lines,

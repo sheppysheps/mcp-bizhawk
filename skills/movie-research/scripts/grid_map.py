@@ -70,7 +70,8 @@ def load_config(path):
 def load_corrections(cfg):
     """Read the corrections file named in the config, if any.
 
-    Returns: dict with "edges" {"a1|a2": {"class": ..., "note": ...}}, "merge"
+    Returns: dict with "edges" {"a1|a2": {"class": ..., "note": ..., and
+    optionally "key", "from", "requires", "requires_back" (see read_passage)}}, "merge"
     {old place id: new place id}, "anchors" {place id: cell}, "moves"
     {frame: {"ignore": true, "note": ...}} (labeled moves that aren't doors,
     such as glitches, left out of the alignment) and "notes" (free text).
@@ -432,6 +433,9 @@ def apply_corrections(grid, corr):
 
     Returns: {edge key: class} for every room-to-room edge, plus the list of
     correction names that matched no edge (typos are reported, not ignored).
+    Also sets grid.locked (key-locked doors), grid.passages (the direction and
+    requirement fields, one dict per corrected edge that has any) and
+    grid.passage_problems (those fields' mistakes, as text).
     """
     by_name = {edge_name(grid.cfg, a, b): (a, b) for (a, b) in grid.edges}
     classes = {k: e["class"] for k, e in grid.edges.items()}
@@ -442,6 +446,7 @@ def apply_corrections(grid, corr):
         classes[(br["a"], br["b"])] = grid.cfg.get("bridge", {}).get("class", "bridge")
     unknown = []
     grid.locked = set()  # edges a correction marks "key": true (a door that is also key-locked)
+    grid.passages, grid.passage_problems = [], []
     for name, fix in corr["edges"].items():
         # people write either cell first ("h10|g10" or "g10|h10")
         sep = "~" if "~" in name else "|"
@@ -450,9 +455,56 @@ def apply_corrections(grid, corr):
             classes[by_name[key]] = fix["class"]
             if fix.get("key"):
                 grid.locked.add(by_name[key])
+            passage, problems = read_passage(grid.cfg, key, by_name[key], fix)
+            if passage:
+                grid.passages.append(passage)
+            grid.passage_problems += problems
         else:
             unknown.append(name)
+    grid.passages.sort(key=lambda p: p["edge"])
     return classes, unknown
+
+
+def read_passage(cfg, name, cells, fix):
+    """Read an edge correction's direction and requirement fields.
+
+    "from" names the cell the edge is crossed from (a one-way's open side, or
+    the side "requires" is measured from); "requires" is what crossing from
+    there needs, "requires_back" what crossing the other way needs. Both are
+    lists of the labeler's vocabulary, as in catalog/1: [] means nothing,
+    absent or null means unknown. A one-way has no way back, so it takes no
+    "requires_back"; any other "requires_back" needs a "from" to say which way
+    is which. Fields with mistakes are dropped and reported, not guessed.
+    Returns: (passage, problems): passage is {"edge", "class", "from", "to",
+    "requires"[, "requires_back"]} or None when the correction has none of
+    the fields; problems is a list of text. Requires: cell_name.
+    """
+    if not any(f in fix for f in ("from", "requires", "requires_back")):
+        return None, []
+    ends = [cell_name(cfg, *c) for c in cells]
+    problems = []
+    frm = fix.get("from")
+    if frm is not None and frm not in ends:
+        problems.append(f"{name}: `from` {frm} is not one of its cells ({' or '.join(ends)})")
+        frm = None
+    reqs = {}
+    for f in ("requires", "requires_back"):
+        v = fix.get(f)
+        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            problems.append(f"{name}: `{f}` must be a list of names ([] for none)")
+            v = None
+        reqs[f] = v
+    if fix["class"] == "oneway" and reqs["requires_back"] is not None:
+        problems.append(f"{name}: a one-way has no way back, so `requires_back` is dropped")
+        reqs["requires_back"] = None
+    if reqs["requires_back"] is not None and frm is None:
+        problems.append(f"{name}: `requires_back` needs a `from` to say which way it means")
+        reqs["requires_back"] = None
+    passage = {"edge": name, "class": fix["class"], "from": frm,
+               "to": None if frm is None else ends[1 - ends.index(frm)], "requires": reqs["requires"]}
+    if fix["class"] != "oneway":
+        passage["requires_back"] = reqs["requires_back"]
+    return passage, problems
 
 
 def build_rooms(grid, classes):
@@ -744,6 +796,18 @@ def mismatches(cfg, grid, classes, rooms, unknown_fixes, moves, used, sols, corr
             rows.append(f"- [ ] {n}: read as **{e['class']}** ({', '.join(f'{k} {v}' for k, v in e['pixels'].items())})")
     L += rows or ["None."]
     L.append("")
+    L += ["## Passages to finish", "",
+          "Corrected one-ways with no `from` (which side can they be crossed from?), and mistakes in the "
+          "`from`, `requires` and `requires_back` fields (those fields are left out until fixed)."]
+    directed = {p["edge"] for p in getattr(grid, "passages", []) if p["from"]}
+    names = {(a, b): edge_name(cfg, a, b) for (a, b) in grid.edges}
+    names.update({(br["a"], br["b"]): br["name"] for br in grid.bridges})
+    corrected = fixed | {n for name in corr["edges"] for n in (name, "~".join(reversed(name.split("~"))))}
+    rows = [f"- [ ] {names[k]}: one-way with no `from`" for k, c in sorted(classes.items())
+            if c == "oneway" and k in names and names[k] in corrected and names[k] not in directed]
+    rows += [f"- [ ] {p}" for p in getattr(grid, "passage_problems", [])]
+    L += rows or ["None."]
+    L.append("")
     L += ["## Bridges to explain", "",
           "Bars that join two room cells across a gap. The aligner treats them as passages between rooms; "
           "say what each really is (a passage, a one-way, a magnet path...) or mark it \"wall\" to drop it."]
@@ -766,14 +830,15 @@ def mismatches(cfg, grid, classes, rooms, unknown_fixes, moves, used, sols, corr
     return "\n".join(L)
 
 
-def result_json(cfg, rooms, used, sols):
+def result_json(cfg, rooms, used, sols, passages=()):
     """The alignment as data for result.json.
 
     Returns: dict with rooms (index -> cells), the first assignment, every
-    place's possible rooms, and each move's doors (null when unexplained).
+    place's possible rooms, each move's doors (null when unexplained) and the
+    corrections' passages (direction and requirements, see read_passage).
     """
     if not sols:
-        return {"format": "grid-map-align/1", "rooms": [], "solutions": 0}
+        return {"format": "grid-map-align/1", "rooms": [], "solutions": 0, "passages": list(passages)}
     best, trace = sols[0]
     return {
         "format": "grid-map-align/1",
@@ -783,6 +848,7 @@ def result_json(cfg, rooms, used, sols):
         "places": {p: {"room": r, "cells": [cell_name(cfg, *c) for c in rooms[r]],
                        "alternatives": sorted({s[0].get(p) for s in sols} - {r})} for p, r in best.items()},
         "moves": [{"frame": t["frames"][0], "from": t["from"], "to": t["to"], "doors": d} for t, d in trace],
+        "passages": list(passages),
     }
 
 
@@ -815,6 +881,8 @@ def main(argv=None):
     except OSError as e:  # e.g. the old overlay is open in an image viewer on Windows
         print(f"warning: overlay.png not written ({e}); close it in other programs and run again")
     print(f"read {len(grid.room)} room cells, {len(grid.edges)} edges, {len(rooms)} rooms -> {out}")
+    if grid.passage_problems:
+        print(f"{len(grid.passage_problems)} passage field problem(s): " + "; ".join(grid.passage_problems))
     if a.cmd == "align":
         moves = load_moves(cfg, corr)
         al = Aligner(grid, classes, rooms, room_of, corr)
@@ -822,7 +890,7 @@ def main(argv=None):
         if limited:
             print(f"search stopped at its node limit after {al.nodes} steps; add anchors to narrow it")
         with open(os.path.join(out, "result.json"), "w", encoding="utf-8", newline="\n") as f:
-            json.dump(result_json(cfg, rooms, used, sols), f, indent=1)
+            json.dump(result_json(cfg, rooms, used, sols, grid.passages), f, indent=1)
             f.write("\n")
         with open(os.path.join(out, "mismatches.md"), "w", encoding="utf-8", newline="\n") as f:
             f.write(mismatches(cfg, grid, classes, rooms, unknown, moves, used, sols, corr))

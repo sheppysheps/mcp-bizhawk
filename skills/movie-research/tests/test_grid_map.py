@@ -227,6 +227,30 @@ class GridMapTests(unittest.TestCase):
         self.assertEqual(len(rooms), 5)
         self.assertEqual(unknown, ["a9|a10"])
 
+    def test_passage_fields_give_direction_and_requirements(self):
+        # b3|b4 becomes a one-way crossed from b4 with grapple; a1|a2 stays open, climb one way, free back
+        corr = {"anchors": {"p-lobby": "a1"},
+                "edges": {"b4|b3": {"class": "oneway", "from": "b4", "requires": ["grapple"]},
+                          "a1|a2": {"class": "open", "from": "a2", "requires": ["climb"], "requires_back": []}}}
+        result, md = self.run_align(self.build(corrections=corr))
+        self.assertEqual(result["passages"], [
+            {"edge": "a1|a2", "class": "open", "from": "a2", "to": "a1", "requires": ["climb"], "requires_back": []},
+            {"edge": "b3|b4", "class": "oneway", "from": "b4", "to": "b3", "requires": ["grapple"]}])
+        self.assertEqual(result["unexplained_moves"], 0)
+        self.assertNotIn("one-way with no", md)
+
+    def test_passage_mistakes_are_reported_not_guessed(self):
+        corr = {"anchors": {"p-lobby": "a1"},
+                "edges": {"b3|b4": {"class": "oneway", "note": "direction only in the note"},
+                          "a1|a2": {"class": "open", "from": "c9", "requires": "climb", "requires_back": []}}}
+        result, md = self.run_align(self.build(corrections=corr))
+        self.assertIn("- [ ] b3|b4: one-way with no `from`", md)
+        self.assertIn("a1|a2: `from` c9 is not one of its cells", md)
+        self.assertIn("a1|a2: `requires` must be a list", md)
+        self.assertIn("a1|a2: `requires_back` needs a `from`", md)
+        self.assertEqual(result["passages"], [
+            {"edge": "a1|a2", "class": "open", "from": None, "to": None, "requires": None, "requires_back": None}])
+
     def test_bad_anchor_is_an_error(self):
         path = self.build(corrections={"anchors": {"p-lobby": "b2"}})
         with self.assertRaises(SystemExit):
