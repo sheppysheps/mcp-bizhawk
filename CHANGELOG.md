@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **findings/1 exporters (ADR 0003).** `findings_export.py` turns
+  confirmed and likely findings into a `BB:AAAA label` symbol file
+  (`sym`) or a Ghidra label script (`ghidra`, GhidraBoy block names),
+  through a per-platform memory map (Game Boy first). Leads and
+  superseded findings are left out; unplaceable addresses, bad lines and
+  mixed ROMs are reported.
 - **Grid map passages: direction and requirements as data.** An edge
   correction can now carry `from` (the cell it's crossed from),
   `requires` and `requires_back` (catalog/1 requirement lists: `[]` none,
